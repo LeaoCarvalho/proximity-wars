@@ -3,10 +3,11 @@ import random
 import socket
 import threading
 import time
+import os
 
 from net_peer import NetPeer
 
-PORT = 50505
+PORT = os.getenv("PORT_OF_GAME") or 8000
 BOARD_W = 10
 MAX_HP = 30
 
