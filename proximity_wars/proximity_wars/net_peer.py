@@ -1,9 +1,10 @@
 import json
-import threading
 import socket
+import threading
+
 
 class NetPeer:
-    """Length-prefixed JSON over a TCP connection."""
+    """Threaded newline-delimited JSON transport over TCP."""
 
     def __init__(self, sock):
         self.sock = sock
@@ -17,7 +18,7 @@ class NetPeer:
         self.thread.start()
 
     def send(self, message):
-        raw = (json.dumps(message, separators=(",", ":")) + "\n").encode()
+        raw = (json.dumps(message, separators=(",", ":")) + "\n").encode("utf-8")
         with self.send_lock:
             try:
                 self.sock.sendall(raw)
@@ -26,9 +27,9 @@ class NetPeer:
 
     def poll(self):
         with self.inbox_lock:
-            items = self.inbox[:]
+            messages = self.inbox[:]
             self.inbox.clear()
-        return items
+        return messages
 
     def _reader(self):
         while self.running:
@@ -43,11 +44,11 @@ class NetPeer:
                     if not line:
                         continue
                     try:
-                        msg = json.loads(line.decode())
+                        message = json.loads(line.decode("utf-8"))
                     except (UnicodeDecodeError, json.JSONDecodeError):
                         continue
                     with self.inbox_lock:
-                        self.inbox.append(msg)
+                        self.inbox.append(message)
             except socket.timeout:
                 continue
             except OSError:
@@ -64,4 +65,3 @@ class NetPeer:
             self.sock.close()
         except OSError:
             pass
-

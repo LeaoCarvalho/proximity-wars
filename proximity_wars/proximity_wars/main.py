@@ -1,46 +1,32 @@
 import argparse
 import socket
-from game import WIDTH, HEIGHT, FPS, Game
-from net_peer import NetPeer
 
 import pygame
 
+from game import WIDTH, HEIGHT, FPS, GameClient
+from net_peer import NetPeer
+
 PORT = 50505
 
-def make_server(port):
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s.bind(("0.0.0.0", port))
-    s.listen(1)
-    return s
 
-def make_client(host, port):
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(12)
-    s.connect((host, port))
-    s.settimeout(0.5)
-    return s
-
-def connect_game(is_host, host, port):
-    if is_host:
-        server = make_server(port)
-        print(f"Hosting Proximity Wars on 0.0.0.0:{port}")
-        print("Give the other player your reachable IP address.")
-        print("For internet play, forward TCP port", port, "or use a VPN such as Tailscale.")
-        conn, addr = server.accept()
-        print("Peer connected from", addr)
-        server.close()
-        return conn
-    else:
-        print(f"Connecting to {host}:{port}...")
-        return make_client(host, port)
+def connect_to_host(host, port):
+    print(f"Connecting to host {host}:{port}...")
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(12)
+    sock.connect((host, port))
+    sock.settimeout(0.5)
+    return sock
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Proximity Wars - Pygame P2P prototype")
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--host", action="store_true", help="Host a game")
-    group.add_argument("--join", metavar="IP", help="Join the host at IP")
+    parser = argparse.ArgumentParser(
+        description="Proximity Wars client"
+    )
+    parser.add_argument(
+        "--host",
+        required=True,
+        help="IP address / hostname of the Proximity Wars host"
+    )
     parser.add_argument("--port", type=int, default=PORT)
     args = parser.parse_args()
 
@@ -49,17 +35,14 @@ def main():
     pygame.display.set_caption("Proximity Wars")
     clock = pygame.time.Clock()
 
-    game = Game(is_host=args.host)
+    game = GameClient()
 
     try:
-        sock = connect_game(args.host, args.join, args.port)
-    except OSError as e:
-        game.connection_error = str(e)
-        game.status = f"Connection failed: {e}"
-        sock = None
-
-    if sock:
+        sock = connect_to_host(args.host, args.port)
         game.attach_peer(NetPeer(sock))
+    except OSError as exc:
+        game.status = f"Connection failed: {exc}"
+        sock = None
 
     selected_weapon = 0
     running = True
@@ -93,11 +76,9 @@ def main():
         pygame.display.flip()
 
     if game.peer:
-        try:
-            game.send({"type": "disconnect"})
-        except Exception:
-            pass
+        game.send({"type": "disconnect"})
         game.peer.close()
+
     pygame.quit()
 
 
