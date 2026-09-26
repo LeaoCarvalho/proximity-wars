@@ -27,20 +27,20 @@ TILE = 88
 BOARD_X = (WIDTH - BOARD_W * TILE) // 2
 BOARD_Y = 235
 
-MAX_HP = 100
+MAX_HP = 30
 
 # A "player region" is half the board. Players may never enter
 # the opponent's region. The boundary is between indices 4 and 5.
 # Healing tiles are the innermost tile in each player's region.
-HEAL_TILES = {4: 35, 5: 35}
+HEAL_TILES = {0: 3, 9: 3}
 
 # Weapons are intentionally easy to tune for playtesting.
 # range = maximum distance; damage = HP removed on a hit.
 WEAPONS = [
-    {"name": "Pulse", "range": 1, "damage": 30, "desc": "Short / heavy"},
-    {"name": "Bolt", "range": 2, "damage": 22, "desc": "Reliable"},
-    {"name": "Wave", "range": 3, "damage": 16, "desc": "Longer reach"},
-    {"name": "Snipe", "range": 4, "damage": 12, "desc": "Maximum range"},
+    {"name": "Magic knife", "range": 1, "damage": 20, "desc": "Enchanted knife, a wizard's best friend"},
+    {"name": "Magical punch", "range": 2, "damage": 10, "desc": "Ethereal big conjured hand"},
+    {"name": "Fireball", "range": 4, "damage": 5, "desc": "I SAID \"I CAST FIREBALL\""},
+    {"name": "Magic bolt", "range": 5, "damage": 4, "desc": "A magical ethereal bolt"},
 ]
 
 
@@ -243,13 +243,13 @@ class Game:
                     "your_pos": self.enemy_pos,
                     "enemy_hp": self.my.hp,
                     "turn": self.turn,
-                    "your_turn": True,
+                    "your_turn": False,
                 })
-                self.my_turn = False
+                self.my_turn = True
                 self.status = "Opponent moved. Your turn."
             else:
                 self.send({"type": "error", "message": "Illegal move."})
-                self.send({"type": "turn", "your_turn": True})
+                self.send({"type": "turn", "your_turn": False})
                 return
 
         elif action == "heal":
@@ -262,13 +262,13 @@ class Game:
                     "your_hp": self.enemy_hp,
                     "enemy_hp": self.my.hp,
                     "turn": self.turn,
-                    "your_turn": True,
+                    "your_turn": False,
                 })
-                self.my_turn = False
+                self.my_turn = True
                 self.status = "Opponent healed. Your turn."
             else:
                 self.send({"type": "error", "message": "Illegal heal."})
-                self.send({"type": "turn", "your_turn": True})
+                self.send({"type": "turn", "your_turn": False})
 
         elif action == "attack":
             weapon_id = int(msg.get("weapon", -1))
@@ -290,7 +290,7 @@ class Game:
                 "your_hp": self.enemy_hp,
                 "enemy_hp": self.my.hp,
                 "turn": self.turn,
-                "your_turn": True,
+                "your_turn": False,
                 "game_over": self.my.hp <= 0,
                 "winner": 1 if self.my.hp <= 0 else None,
             }
@@ -301,11 +301,12 @@ class Game:
                 self.winner = 1
                 self.status = "You were defeated."
             else:
-                self.my_turn = False
+                self.my_turn = True
                 self.status = "Opponent attacked. Your turn."
 
     def handle_message(self, msg):
         t = msg.get("type")
+        print(msg, self.is_host)
 
         if t == "hello":
             if not self.is_host:
