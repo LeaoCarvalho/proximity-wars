@@ -94,7 +94,7 @@ class GameClient:
             return
         
         # TODO: Improve
-        if self.player_index == 0:
+        if self.player_index == 1:
             new_heal_tile = rnd.randint(0, 4)
         else:
             new_heal_tile = rnd.randint(5, 9)
@@ -271,7 +271,7 @@ class GameClient:
             base = (38, 65, 92) if i <= 4 else (78, 50, 72)
             pygame.draw.rect(surface, base, rect, border_radius=6)
 
-            if i in HEAL_TILES:
+            if i in HEAL_TILES and i == self.last_heal_tile:
                 pygame.draw.rect(surface, (75, 170, 110), rect, 4, border_radius=6)
                 plus = self.big.render("+", True, (135, 245, 160))
                 surface.blit(
