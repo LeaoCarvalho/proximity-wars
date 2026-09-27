@@ -1,5 +1,4 @@
 import argparse
-import socket
 
 import pygame
 
@@ -9,13 +8,20 @@ from net_peer import NetPeer
 PORT = 50505
 
 
-def connect_to_host(host, port):
-    print(f"Connecting to host {host}:{port}...")
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(12)
-    sock.connect((host, port))
-    sock.settimeout(0.5)
-    return sock
+def make_ws_url(host, port):
+    host = host.strip()
+    if host.startswith("ws://") or host.startswith("wss://"):
+        base = host.rstrip("/")
+        return base if base.endswith("/ws") else base + "/ws"
+
+    if host.startswith("http://"):
+        return "ws://" + host[len("http://"):].rstrip("/") + "/ws"
+
+    if host.startswith("https://"):
+        return "wss://" + host[len("https://"):].rstrip("/") + "/ws"
+
+    scheme = "ws" if host in ("127.0.0.1", "localhost") else "ws"
+    return f"{scheme}://{host}:{port}/ws"
 
 
 def main():
@@ -25,7 +31,7 @@ def main():
     parser.add_argument(
         "--host",
         required=True,
-        help="IP address / hostname of the Proximity Wars host"
+        help="Host/IP, HTTP(S) URL, or WebSocket URL of the Proximity Wars server"
     )
     parser.add_argument("--port", type=int, default=PORT)
     args = parser.parse_args()
@@ -38,11 +44,11 @@ def main():
     game = GameClient()
 
     try:
-        sock = connect_to_host(args.host, args.port)
-        game.attach_peer(NetPeer(sock))
-    except OSError as exc:
+        ws_url = make_ws_url(args.host, args.port)
+        print(f"Connecting to {ws_url}...")
+        game.attach_peer(NetPeer(ws_url))
+    except Exception as exc:
         game.status = f"Connection failed: {exc}"
-        sock = None
 
     selected_weapon = 0
     running = True

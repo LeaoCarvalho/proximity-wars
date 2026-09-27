@@ -1,13 +1,11 @@
-import argparse
-import random
-import socket
-import threading
-import time
+import asyncio
 import os
+import random
+from contextlib import asynccontextmanager
 
-from net_peer import NetPeer
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 
-PORT = os.getenv("PORT_OF_GAME") or 8000
 BOARD_W = 10
 MAX_HP = 30
 
@@ -22,48 +20,58 @@ WEAPONS = [
 
 
 class GameServer:
-    """Authoritative host for exactly two clients."""
+    """Authoritative game host for exactly two WebSocket clients."""
 
     def __init__(self):
-        self.peers = [None, None]
+        self.clients: list[WebSocket | None] = [None, None]
+        self.positions: list[int | None] = [None, None]
+        self.hp = [MAX_HP, MAX_HP]
+        self.turn = 0
+        self.game_over = False
+        self.winner: int | None = None
+        self.started = False
+        self.lock = asyncio.Lock()
+
+    async def send(self, player: int, message: dict):
+        ws = self.clients[player]
+        if ws is None:
+            return
+        try:
+            await ws.send_json(message)
+        except Exception:
+            pass
+
+    async def broadcast(self, message: dict):
+        await asyncio.gather(*(self.send(i, message) for i in range(2)))
+
+    def reset(self):
+        self.clients = [None, None]
         self.positions = [None, None]
         self.hp = [MAX_HP, MAX_HP]
         self.turn = 0
         self.game_over = False
         self.winner = None
         self.started = False
-        self.lock = threading.Lock()
 
-    def send(self, player, message):
-        peer = self.peers[player]
-        if peer and peer.running:
-            peer.send(message)
-
-    def broadcast(self, message):
-        for i in range(2):
-            self.send(i, message)
-
-    def legal_move(self, player, pos, direction):
+    def legal_move(self, player: int, pos: int, direction: int) -> bool:
         new_pos = pos + direction
         return (0 <= new_pos <= 4) if player == 0 else (5 <= new_pos <= 9)
 
-    def start_game(self):
-        # Player 0 lives on the left; player 1 on the right.
+    async def start_game(self):
         self.positions[0] = random.randint(0, 3)
         self.positions[1] = random.randint(6, 9)
         self.turn = 0
         self.started = True
 
-        # Each player receives ONLY their own position.
-        for p in range(2):
-            self.send(p, {
+        for player in range(2):
+            await self.send(player, {
                 "type": "game_start",
-                "player": p,
-                "your_pos": self.positions[p],
-                "your_hp": self.hp[p],
-                "opponent_hp": self.hp[1 - p],
+                "player": player,
+                "your_pos": self.positions[player],
+                "your_hp": self.hp[player],
+                "opponent_hp": self.hp[1 - player],
                 "turn": self.turn,
-                "your_turn": p == 0,
+                "your_turn": player == 0,
             })
 
         print(
@@ -71,21 +79,13 @@ class GameServer:
             f"P2 hidden pos={self.positions[1]}"
         )
 
-    def public_state(self):
-        return {
-            "hp": self.hp[:],
-            "turn": self.turn,
-            "game_over": self.game_over,
-            "winner": self.winner,
-        }
-
-    def process_action(self, player, msg):
-        with self.lock:
+    async def process_action(self, player: int, msg: dict):
+        async with self.lock:
             if not self.started or self.game_over:
                 return
 
             if player != self.turn:
-                self.send(player, {
+                await self.send(player, {
                     "type": "error",
                     "message": "It is not your turn."
                 })
@@ -95,15 +95,14 @@ class GameServer:
                 return
 
             action = msg.get("action")
-
             if action == "move":
-                self.process_move(player, msg)
+                await self.process_move(player, msg)
             elif action == "heal":
-                self.process_heal(player)
+                await self.process_heal(player)
             elif action == "attack":
-                self.process_attack(player, msg)
+                await self.process_attack(player, msg)
             else:
-                self.send(player, {
+                await self.send(player, {
                     "type": "error",
                     "message": "Unknown action."
                 })
@@ -111,31 +110,30 @@ class GameServer:
     def next_turn(self):
         self.turn = 1 - self.turn
 
-    def process_move(self, player, msg):
+    async def process_move(self, player: int, msg: dict):
         try:
             direction = int(msg.get("direction"))
         except (TypeError, ValueError):
+            await self.send(player, {"type": "error", "message": "Invalid move."})
             return
 
         if direction not in (-1, 1):
-            self.send(player, {"type": "error", "message": "Invalid move."})
+            await self.send(player, {"type": "error", "message": "Invalid move."})
             return
 
         old_pos = self.positions[player]
-        new_pos = old_pos + direction
-
-        if not self.legal_move(player, old_pos, direction):
-            self.send(player, {
+        if old_pos is None or not self.legal_move(player, old_pos, direction):
+            await self.send(player, {
                 "type": "error",
                 "message": "You cannot enter the enemy region."
             })
             return
 
+        new_pos = old_pos + direction
         self.positions[player] = new_pos
         self.next_turn()
 
-        # Actor learns their own new position.
-        self.send(player, {
+        await self.send(player, {
             "type": "action_result",
             "action": "move",
             "your_pos": new_pos,
@@ -145,9 +143,7 @@ class GameServer:
             "your_turn": False,
         })
 
-        # Opponent learns only that movement happened.
-        other = 1 - player
-        self.send(other, {
+        await self.send(1 - player, {
             "type": "opponent_action",
             "action": "move",
             "opponent_hp": self.hp[player],
@@ -155,18 +151,19 @@ class GameServer:
             "your_turn": True,
         })
 
-    def process_heal(self, player):
-        amount = HEAL_TILES.get(self.positions[player])
+    async def process_heal(self, player: int):
+        pos = self.positions[player]
+        amount = HEAL_TILES.get(pos)
 
         if not amount:
-            self.send(player, {
+            await self.send(player, {
                 "type": "error",
                 "message": "You can only heal on the glowing tile."
             })
             return
 
         if self.hp[player] >= MAX_HP:
-            self.send(player, {
+            await self.send(player, {
                 "type": "error",
                 "message": "You are already at full health."
             })
@@ -175,7 +172,7 @@ class GameServer:
         self.hp[player] = min(MAX_HP, self.hp[player] + amount)
         self.next_turn()
 
-        self.send(player, {
+        await self.send(player, {
             "type": "action_result",
             "action": "heal",
             "your_hp": self.hp[player],
@@ -184,8 +181,7 @@ class GameServer:
             "your_turn": False,
         })
 
-        other = 1 - player
-        self.send(other, {
+        await self.send(1 - player, {
             "type": "opponent_action",
             "action": "heal",
             "opponent_hp": self.hp[player],
@@ -193,19 +189,20 @@ class GameServer:
             "your_turn": True,
         })
 
-    def process_attack(self, player, msg):
+    async def process_attack(self, player: int, msg: dict):
         try:
             weapon_id = int(msg.get("weapon"))
         except (TypeError, ValueError):
+            await self.send(player, {"type": "error", "message": "Invalid weapon."})
             return
 
         if not 0 <= weapon_id < len(WEAPONS):
-            self.send(player, {"type": "error", "message": "Invalid weapon."})
+            await self.send(player, {"type": "error", "message": "Invalid weapon."})
             return
 
-        weapon = WEAPONS[weapon_id]
         opponent = 1 - player
         distance = abs(self.positions[player] - self.positions[opponent])
+        weapon = WEAPONS[weapon_id]
         hit = distance <= weapon["range"]
         damage = weapon["damage"] if hit else 0
 
@@ -218,9 +215,7 @@ class GameServer:
             self.game_over = True
             self.winner = player
 
-        # Attacker gets the tactical result. Their opponent's position is
-        # never revealed.
-        self.send(player, {
+        await self.send(player, {
             "type": "attack_result",
             "weapon": weapon_id,
             "hit": hit,
@@ -233,9 +228,7 @@ class GameServer:
             "winner": self.winner,
         })
 
-        # Defender gets public health information and learns whether they
-        # were hit, but never gets the attacker's position.
-        self.send(opponent, {
+        await self.send(opponent, {
             "type": "defense_result",
             "weapon": weapon_id,
             "hit": hit,
@@ -248,86 +241,113 @@ class GameServer:
             "winner": self.winner,
         })
 
-        if self.game_over:
-            print(f"Player {player + 1} won.")
+        if not self.game_over:
+            await self.send(self.turn, {"type": "turn", "your_turn": True})
         else:
-            # The new turn belongs to the other player.
-            self.send(self.turn, {
-                "type": "turn",
-                "your_turn": True,
-            })
+            print(f"Player {player + 1} won.")
 
-    def attach_client(self, player, peer):
-        self.peers[player] = peer
-
-    def client_loop(self, player):
-        peer = self.peers[player]
-        while peer.running:
-            for msg in peer.poll():
-                if msg.get("type") == "action":
-                    self.process_action(player, msg)
-                elif msg.get("type") == "disconnect":
-                    peer.close()
-                    return
-            time.sleep(0.01)
-
-    def run(self, port):
-        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server_socket.bind(("0.0.0.0", port))
-        server_socket.listen(2)
-
-        print(f"Proximity Wars HOST listening on 0.0.0.0:{port}")
-        print("Waiting for Player 1...")
-        conn1, addr1 = server_socket.accept()
-        print("Player 1 connected from", addr1)
-
-        peer1 = NetPeer(conn1)
-        self.attach_client(0, peer1)
-
-        self.send(0, {
-            "type": "waiting",
-            "message": "Connected as Player 1. Waiting for Player 2..."
-        })
-
-        print("Waiting for Player 2...")
-        conn2, addr2 = server_socket.accept()
-        print("Player 2 connected from", addr2)
-
-        peer2 = NetPeer(conn2)
-        self.attach_client(1, peer2)
-
-        server_socket.close()
-
-        # Start each client's receiver loop.
-        threading.Thread(target=self.client_loop, args=(0,), daemon=True).start()
-        threading.Thread(target=self.client_loop, args=(1,), daemon=True).start()
-
-        self.start_game()
-
+    async def receive_client(self, player: int, websocket: WebSocket):
         try:
             while True:
-                if self.game_over:
-                    time.sleep(0.2)
-                if not all(peer and peer.running for peer in self.peers):
-                    print("A client disconnected.")
+                message = await websocket.receive_json()
+                if message.get("type") == "action":
+                    await self.process_action(player, message)
+                elif message.get("type") == "disconnect":
                     break
-                time.sleep(0.2)
-        except KeyboardInterrupt:
-            print("\nHost shutting down.")
+        except WebSocketDisconnect:
+            pass
+        except Exception as exc:
+            print(f"Player {player + 1} connection error: {exc}")
         finally:
-            for peer in self.peers:
-                if peer:
-                    peer.close()
+            print(f"Player {player + 1} disconnected.")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Proximity Wars authoritative host")
-    parser.add_argument("--port", type=int, default=PORT)
-    args = parser.parse_args()
-
-    GameServer().run(args.port)
+server = GameServer()
 
 
-if __name__ == "__main__":
-    main()
+app = FastAPI(title="Proximity Wars Host")
+
+
+@app.get("/health")
+async def health():
+    return JSONResponse({
+        "status": "ok",
+        "players": sum(client is not None for client in server.clients),
+        "game_started": server.started,
+    })
+
+
+@app.get("/")
+async def root():
+    return JSONResponse({
+        "game": "Proximity Wars",
+        "status": "online",
+        "websocket": "/ws",
+    })
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+
+    # Reserve one of the two player slots. A third connection is rejected.
+    async with server.lock:
+        if server.clients[0] is None:
+            player = 0
+        elif server.clients[1] is None:
+            player = 1
+        else:
+            await websocket.send_json({
+                "type": "error",
+                "message": "Game is full."
+            })
+            await websocket.close(code=1008)
+            return
+
+        server.clients[player] = websocket
+
+    print(f"Player {player + 1} connected via WebSocket.")
+
+    await server.send(player, {
+        "type": "waiting",
+        "player": player,
+        "message": (
+            "Connected as Player 1. Waiting for Player 2..."
+            if player == 0 else "Connected as Player 2. Starting game..."
+        ),
+    })
+
+    if server.clients[0] is not None and server.clients[1] is not None and not server.started:
+        await server.start_game()
+
+    try:
+        await server.receive_client(player, websocket)
+    finally:
+        async with server.lock:
+            if server.clients[player] is websocket:
+                server.clients[player] = None
+
+            # A disconnected player ends the current match, but the Render
+            # process remains alive and can accept a new pair of players.
+            if server.started:
+                other = 1 - player
+                other_ws = server.clients[other]
+                if other_ws is not None:
+                    try:
+                        await other_ws.send_json({
+                            "type": "disconnect",
+                            "message": "The other player disconnected."
+                        })
+                        await other_ws.close(code=1000)
+                    except Exception:
+                        pass
+                    server.clients[other] = None
+
+                server.started = False
+                server.game_over = False
+                server.winner = None
+                server.positions = [None, None]
+                server.hp = [MAX_HP, MAX_HP]
+                server.turn = 0
+
+        print("Server remains online; waiting for the next game.")

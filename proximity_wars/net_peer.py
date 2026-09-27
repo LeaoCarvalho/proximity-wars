@@ -1,29 +1,33 @@
 import json
-import socket
 import threading
+import websocket
 
 
 class NetPeer:
-    """Threaded newline-delimited JSON transport over TCP."""
+    """Threaded JSON WebSocket transport for the Pygame client."""
 
-    def __init__(self, sock):
-        self.sock = sock
-        self.sock.settimeout(0.5)
-        self.send_lock = threading.Lock()
+    def __init__(self, url):
+        self.url = url
         self.inbox = []
         self.inbox_lock = threading.Lock()
+        self.send_lock = threading.Lock()
         self.running = True
-        self.buffer = b""
+
+        self.ws = websocket.create_connection(url, timeout=12)
+        self.ws.settimeout(0.5)
+
         self.thread = threading.Thread(target=self._reader, daemon=True)
         self.thread.start()
 
     def send(self, message):
-        raw = (json.dumps(message, separators=(",", ":")) + "\n").encode("utf-8")
-        with self.send_lock:
-            try:
-                self.sock.sendall(raw)
-            except OSError:
-                self.running = False
+        if not self.running:
+            return
+        try:
+            payload = json.dumps(message, separators=(",", ":"))
+            with self.send_lock:
+                self.ws.send(payload)
+        except Exception:
+            self.running = False
 
     def poll(self):
         with self.inbox_lock:
@@ -34,34 +38,28 @@ class NetPeer:
     def _reader(self):
         while self.running:
             try:
-                chunk = self.sock.recv(4096)
-                if not chunk:
+                payload = self.ws.recv()
+                if not payload:
                     self.running = False
                     break
-                self.buffer += chunk
-                while b"\n" in self.buffer:
-                    line, self.buffer = self.buffer.split(b"\n", 1)
-                    if not line:
-                        continue
-                    try:
-                        message = json.loads(line.decode("utf-8"))
-                    except (UnicodeDecodeError, json.JSONDecodeError):
-                        continue
-                    with self.inbox_lock:
-                        self.inbox.append(message)
-            except socket.timeout:
-                continue
-            except OSError:
+                try:
+                    message = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+                with self.inbox_lock:
+                    self.inbox.append(message)
+            except Exception as exc:
+                # websocket-client uses WebSocketTimeoutException for its
+                # normal polling timeout. Any other exception means the
+                # connection is gone.
+                if exc.__class__.__name__ == "WebSocketTimeoutException":
+                    continue
                 self.running = False
                 break
 
     def close(self):
         self.running = False
         try:
-            self.sock.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-        try:
-            self.sock.close()
-        except OSError:
+            self.ws.close()
+        except Exception:
             pass
