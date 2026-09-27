@@ -99,7 +99,7 @@ class GameClient:
         else:
             new_heal_tile = rnd.randint(5, 9)
         tmp = HEAL_TILES[self.last_heal_tile]
-        HEAL_TILES[self.last_heal_tile].pop()
+        HEAL_TILES.pop(self.last_heal_tile)
         HEAL_TILES[new_heal_tile] = tmp
         self.last_heal_tile = new_heal_tile
 
