@@ -153,7 +153,7 @@ class GameServer:
 
     async def process_heal(self, player: int):
         pos = self.positions[player]
-        amount = HEAL_TILES.get(pos)
+        amount = 3#HEAL_TILES.get(pos)
 
         if not amount:
             await self.send(player, {

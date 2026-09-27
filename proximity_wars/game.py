@@ -1,4 +1,5 @@
 import pygame
+import random as rnd
 from dataclasses import dataclass
 
 WIDTH, HEIGHT = 1100, 720
@@ -51,6 +52,8 @@ class GameClient:
         self.big = pygame.font.SysFont("arial", 36, bold=True)
         self.title = pygame.font.SysFont("arial", 48, bold=True)
 
+        self.last_heal_tile = 0
+
     def attach_peer(self, peer):
         self.peer = peer
         self.connected = True
@@ -89,6 +92,16 @@ class GameClient:
         if self.my.hp >= MAX_HP:
             self.status = "You are already at full health."
             return
+        
+        # TODO: Improve
+        if self.player_index == 0:
+            new_heal_tile = rnd.randint(0, 4)
+        else:
+            new_heal_tile = rnd.randint(5, 9)
+        tmp = HEAL_TILES[self.last_heal_tile]
+        HEAL_TILES[self.last_heal_tile].pop()
+        HEAL_TILES[new_heal_tile] = tmp
+        self.last_heal_tile = new_heal_tile
 
         self.send({"type": "action", "action": "heal"})
         self.my_turn = False
