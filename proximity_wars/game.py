@@ -35,10 +35,7 @@ class GameClient:
         self.player_index = None
         self.my = PlayerState()
         self.enemy_hp = MAX_HP
-        if self.player_index == 0:
-            self.my_heal_tiles = {0: HEAL_AMOUNT}
-        else:
-            self.my_heal_tiles = {9: HEAL_AMOUNT}
+        self.my_heal_tiles = {}
         
         self.peer = None
         self.connected = False
@@ -134,7 +131,6 @@ class GameClient:
 
         elif t == "game_start":
             self.player_index = int(msg["player"])
-            self.last_heal_tile = 0 if self.player_index == 0 else 9
             self.my.pos = int(msg["your_pos"])
             self.my.hp = int(msg["your_hp"])
             self.enemy_hp = int(msg["opponent_hp"])
@@ -146,6 +142,11 @@ class GameClient:
                 if self.my_turn
                 else "Opponent's turn."
             )
+            if "heal_tiles" in msg:
+                self.my_heal_tiles = {
+                    int(k): v for k, v in msg["heal_tiles"].items()
+                }
+                print(f"self.my_heal_tiles: {self.my_heal_tiles}")
 
         elif t == "action_result":
             self.my.pos = int(msg.get("your_pos", self.my.pos))
@@ -153,7 +154,11 @@ class GameClient:
             self.enemy_hp = int(msg["opponent_hp"])
             self.turn = int(msg["turn"])
             self.my_turn = bool(msg["your_turn"])
-            self.my_heal_tiles = dict(msg["heal_tiles"])
+            if "heal_tiles" in msg:
+                self.my_heal_tiles = {
+                    int(k): v for k, v in msg["heal_tiles"].items()
+                }
+                print(f"self.my_heal_tiles: {self.my_heal_tiles}")
 
             if msg["action"] == "move":
                 self.status = "You moved. Waiting for opponent."

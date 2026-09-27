@@ -58,6 +58,7 @@ class NetPeer:
                 break
 
     def close(self):
+        print("batata")
         self.running = False
         try:
             self.ws.close()

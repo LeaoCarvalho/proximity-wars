@@ -10,7 +10,7 @@ BOARD_W = 10
 MAX_HP = 30
 HEAL_AMOUNT = 8
 
-HEAL_TILES = {0: HEAL_AMOUNT, 9: HEAL_AMOUNT}
+# HEAL_TILES = {0: HEAL_AMOUNT, 9: HEAL_AMOUNT}
 
 WEAPONS = [
     {"name": "Magic knife", "range": 1, "damage": 20},
@@ -74,6 +74,7 @@ class GameServer:
                 "opponent_hp": self.hp[1 - player],
                 "turn": self.turn,
                 "your_turn": player == 0,
+                "heal_tiles": self.heal_tiles[player]
             })
 
         print(
@@ -161,19 +162,19 @@ class GameServer:
         if not amount:
             await self.send(player, {
                 "type": "error",
-                "message": "You can only heal on the glowing tile."
+                "message": f"You can only heal on the glowing tile. Your glowing tiles: {self.heal_tiles[player]}"
             })
             return
 
         self.hp[player] = min(MAX_HP, self.hp[player] + amount)
 
-        if self.player_index == 0:
+        if player == 0:
             new_heal_tile = random.randint(0, 4)
         else:
             new_heal_tile = random.randint(5, 9)
 
-        HEAL_TILES.pop(pos)
-        HEAL_TILES[new_heal_tile] = amount
+        self.heal_tiles[player].pop(pos)
+        self.heal_tiles[player][new_heal_tile] = amount
 
         self.next_turn()
 
@@ -182,7 +183,7 @@ class GameServer:
             "action": "heal",
             "your_hp": self.hp[player],
             "opponent_hp": self.hp[1 - player],
-            "heal_tiles": HEAL_TILES,
+            "heal_tiles": self.heal_tiles[player],
             "turn": self.turn,
             "your_turn": False,
         })
