@@ -27,6 +27,12 @@ class PlayerState:
     hp: int = MAX_HP
 
 
+class Tile:
+    def __init__(self, id, rect):
+        self.id = id
+        self.rect = rect
+
+
 class GameClient:
     """Pygame client. Never stores the opponent's exact position."""
 
@@ -35,6 +41,7 @@ class GameClient:
         self.my = PlayerState()
         self.enemy_hp = MAX_HP
         self.my_heal_tiles = {}
+        self.weapon_id = 0
         
         self.peer = None
         self.connected = False
@@ -53,6 +60,20 @@ class GameClient:
         self.title = pygame.font.SysFont("arial", 48, bold=True)
 
         self.last_heal_tile = 0
+
+        self.tile_list = self.__make_tiles()
+
+        self.mouse_pos = (0, 0)
+
+    def __make_tiles(self):
+        list_ = []
+        for i in range(BOARD_W):
+            x = BOARD_X + i * TILE
+            list_.append(
+                Tile(id = i, rect = pygame.Rect(x, BOARD_Y, TILE - 2, TILE - 2))
+            )
+
+        return list_
 
     def attach_peer(self, peer):
         self.peer = peer
@@ -93,20 +114,37 @@ class GameClient:
         # self.my_turn = False
         # self.status = "Heal sent. Waiting for opponent..."
 
-    def local_attack(self, weapon_id):
+    def find_range_from_mouse(self, mouse_pos):
+        for tile in self.tile_list:
+            if tile.rect.collidepoint(mouse_pos):
+                if self.player_index == 0:
+                    return tile.id - self.my.pos
+                else:
+                    return self.my.pos - tile.id
+        
+        return None
+
+    def local_attack(self, selected_range):
         if not self.can_act():
             return
 
-        if not 0 <= weapon_id < len(WEAPONS):
+        if not 0 <= self.weapon_id < len(WEAPONS):
+            return
+
+        if selected_range <= 0 or selected_range > WEAPONS[self.weapon_id]["range"]:
             return
 
         self.send({
             "type": "action",
             "action": "attack",
-            "weapon": weapon_id,
+            "weapon": self.weapon_id,
+            "range": selected_range
         })
         self.my_turn = False
-        self.status = f"{WEAPONS[weapon_id]['name']} fired. Waiting for result..."
+        self.status = f"{WEAPONS[self.weapon_id]['name']} fired. Waiting for result..."
+
+    def local_select_weapon(self, weapon_id):
+        self.weapon_id = weapon_id
 
     def can_act(self):
         if not self.connected:
@@ -239,6 +277,9 @@ class GameClient:
             self.connected = False
             self.status = "Disconnected from host."
 
+    def update_mouse_pos(self, new_mouse_pos):
+        self.mouse_pos = new_mouse_pos
+
     def draw_health(self, surface, x, y, hp, label):
         pygame.draw.rect(surface, (45, 45, 52), (x, y, 360, 28), border_radius=7)
         pygame.draw.rect(
@@ -255,96 +296,264 @@ class GameClient:
         title = self.title.render("PROXIMITY WARS", True, (240, 240, 250))
         surface.blit(title, (WIDTH // 2 - title.get_width() // 2, 24))
 
-        self.draw_health(surface, 55, 95, self.my.hp, "YOU")
-        self.draw_health(surface, WIDTH - 415, 95, self.enemy_hp, "OPPONENT")
+        # ---------------------------------------------------------
+        # Health bars
+        # ---------------------------------------------------------
+        if self.player_index == 0:
+            # Player 1 owns the left side
+            self.draw_health(surface, 55, 95, self.my.hp, "YOU")
+            self.draw_health(surface, WIDTH - 415, 95, self.enemy_hp, "OPPONENT")
 
+        elif self.player_index == 1:
+            # Player 2 owns the right side
+            self.draw_health(surface, 55, 95, self.enemy_hp, "OPPONENT")
+            self.draw_health(surface, WIDTH - 415, 95, self.my.hp, "YOU")
+
+        else:
+            # Waiting for the player index to be assigned
+            self.draw_health(surface, 55, 95, self.my.hp, "YOU")
+            self.draw_health(surface, WIDTH - 415, 95, self.enemy_hp, "OPPONENT")
+
+        # ---------------------------------------------------------
+        # Board
+        # ---------------------------------------------------------
         for i in range(BOARD_W):
             x = BOARD_X + i * TILE
             rect = pygame.Rect(x, BOARD_Y, TILE - 2, TILE - 2)
 
             base = (38, 65, 92) if i <= 4 else (78, 50, 72)
+
+            if rect.collidepoint(self.mouse_pos):
+                light = lambda color : int(color * 1.5)
+                base = (light(base[0]), light(base[1]), light(base[2]))
+            
             pygame.draw.rect(surface, base, rect, border_radius=6)
 
             if i in self.my_heal_tiles:
-                pygame.draw.rect(surface, (75, 170, 110), rect, 4, border_radius=6)
+                pygame.draw.rect(
+                    surface,
+                    (75, 170, 110),
+                    rect,
+                    4,
+                    border_radius=6
+                )
+
                 plus = self.big.render("+", True, (135, 245, 160))
                 surface.blit(
                     plus,
-                    (x + TILE // 2 - plus.get_width() // 2,
-                     BOARD_Y + TILE // 2 - plus.get_height() // 2)
+                    (
+                        x + TILE // 2 - plus.get_width() // 2,
+                        BOARD_Y + TILE // 2 - plus.get_height() // 2
+                    )
                 )
 
             n = self.small.render(str(i + 1), True, (190, 195, 205))
             surface.blit(n, (x + 6, BOARD_Y + 6))
 
-        a = self.small.render("YOUR REGION", True, (170, 195, 220))
-        b = self.small.render("ENEMY REGION", True, (220, 175, 200))
+        # ---------------------------------------------------------
+        # Region labels
+        # ---------------------------------------------------------
+        if self.player_index == 0:
+            # Player 1 owns the left side
+            left_label = "YOUR REGION"
+            right_label = "OPPONENT REGION"
+
+        elif self.player_index == 1:
+            # Player 2 owns the right side
+            left_label = "OPPONENT REGION"
+            right_label = "YOUR REGION"
+
+        else:
+            left_label = "PLAYER 1 REGION"
+            right_label = "PLAYER 2 REGION"
+
+        a = self.small.render(left_label, True, (170, 195, 220))
+        b = self.small.render(right_label, True, (220, 175, 200))
+
         surface.blit(a, (BOARD_X, BOARD_Y - 25))
         surface.blit(b, (BOARD_X + 5 * TILE, BOARD_Y - 25))
 
+        # ---------------------------------------------------------
         # Only the local player's piece is rendered.
+        # ---------------------------------------------------------
         if self.player_index is not None:
             cx = BOARD_X + self.my.pos * TILE + TILE // 2
             cy = BOARD_Y + TILE // 2
-            pygame.draw.circle(surface, (235, 235, 245), (cx, cy), 23)
-            pygame.draw.circle(surface, (30, 30, 38), (cx, cy), 23, 3)
+
+            pygame.draw.circle(
+                surface,
+                (235, 235, 245),
+                (cx, cy),
+                23
+            )
+
+            pygame.draw.circle(
+                surface,
+                (30, 30, 38),
+                (cx, cy),
+                23,
+                3
+            )
 
             number = str(self.player_index + 1)
             me = self.big.render(number, True, (30, 30, 38))
+
             surface.blit(
                 me,
-                (cx - me.get_width() // 2, cy - me.get_height() // 2)
+                (
+                    cx - me.get_width() // 2,
+                    cy - me.get_height() // 2
+                )
             )
 
-        status_color = (120, 230, 150) if self.my_turn else (215, 205, 130)
-        status = self.font.render(self.status, True, status_color)
-        surface.blit(status, (WIDTH // 2 - status.get_width() // 2, 350))
+        # ---------------------------------------------------------
+        # Status
+        # ---------------------------------------------------------
+        status_color = (
+            (120, 230, 150)
+            if self.my_turn
+            else (215, 205, 130)
+        )
+
+        status = self.font.render(
+            self.status,
+            True,
+            status_color
+        )
+
+        surface.blit(
+            status,
+            (WIDTH // 2 - status.get_width() // 2, 350)
+        )
 
         hint = self.small.render(
             "A/D or ←/→: move    H: heal    1-4: attack    Esc: quit",
-            True, (175, 180, 190)
+            True,
+            (175, 180, 190)
         )
-        surface.blit(hint, (WIDTH // 2 - hint.get_width() // 2, 383))
 
+        surface.blit(
+            hint,
+            (WIDTH // 2 - hint.get_width() // 2, 383)
+        )
+
+        # ---------------------------------------------------------
+        # Weapon panel
+        # ---------------------------------------------------------
         panel_y = 425
+
         for i, w in enumerate(WEAPONS):
             x = 75 + i * 250
             selected = i == selected_weapon
-            rect = pygame.Rect(x, panel_y, 220, 120)
+
+            rect = pygame.Rect(
+                x,
+                panel_y,
+                220,
+                120
+            )
+
             pygame.draw.rect(
                 surface,
                 (42, 44, 54) if not selected else (57, 64, 82),
                 rect,
                 border_radius=10
             )
+
             pygame.draw.rect(
-                surface, (115, 125, 150), rect,
+                surface,
+                (115, 125, 150),
+                rect,
                 2 if selected else 1,
                 border_radius=10
             )
 
-            name = self.font.render(f"{i+1}. {w['name']}", True, (240, 240, 245))
-            line1 = self.small.render(f"Range: {w['range']} tile(s)", True, (205, 210, 220))
-            line2 = self.small.render(f"Damage: {w['damage']} HP", True, (205, 210, 220))
-            line3 = self.small.render(w["desc"], True, (155, 165, 180))
+            name = self.font.render(
+                f"{i+1}. {w['name']}",
+                True,
+                (240, 240, 245)
+            )
+
+            line1 = self.small.render(
+                f"Range: {w['range']} tile(s)",
+                True,
+                (205, 210, 220)
+            )
+
+            line2 = self.small.render(
+                f"Damage: {w['damage']} HP",
+                True,
+                (205, 210, 220)
+            )
+
+            line3 = self.small.render(
+                w["desc"],
+                True,
+                (155, 165, 180)
+            )
 
             surface.blit(name, (x + 14, panel_y + 12))
             surface.blit(line1, (x + 14, panel_y + 48))
             surface.blit(line2, (x + 14, panel_y + 69))
             surface.blit(line3, (x + 14, panel_y + 92))
 
+        # ---------------------------------------------------------
+        # Last action result
+        # ---------------------------------------------------------
         if self.last_result:
-            r = self.small.render(self.last_result, True, (245, 220, 130))
-            surface.blit(r, (WIDTH // 2 - r.get_width() // 2, 565))
+            r = self.small.render(
+                self.last_result,
+                True,
+                (245, 220, 130)
+            )
 
+            surface.blit(
+                r,
+                (WIDTH // 2 - r.get_width() // 2, 565)
+            )
+
+        # ---------------------------------------------------------
+        # Game over
+        # ---------------------------------------------------------
         if self.game_over:
-            overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+            overlay = pygame.Surface(
+                (WIDTH, HEIGHT),
+                pygame.SRCALPHA
+            )
+
             overlay.fill((0, 0, 0, 150))
             surface.blit(overlay, (0, 0))
 
-            msg = "YOU WIN!" if self.winner == self.player_index else "YOU LOSE"
-            big = self.title.render(msg, True, (250, 250, 250))
-            surface.blit(big, (WIDTH // 2 - big.get_width() // 2, 285))
+            msg = (
+                "YOU WIN!"
+                if self.winner == self.player_index
+                else "YOU LOSE"
+            )
 
-            sub = self.font.render("Press Esc to quit.", True, (225, 225, 230))
-            surface.blit(sub, (WIDTH // 2 - sub.get_width() // 2, 350))
+            big = self.title.render(
+                msg,
+                True,
+                (250, 250, 250)
+            )
+
+            surface.blit(
+                big,
+                (
+                    WIDTH // 2 - big.get_width() // 2,
+                    285
+                )
+            )
+
+            sub = self.font.render(
+                "Press Esc to quit.",
+                True,
+                (225, 225, 230)
+            )
+
+            surface.blit(
+                sub,
+                (
+                    WIDTH // 2 - sub.get_width() // 2,
+                    350
+                )
+            )

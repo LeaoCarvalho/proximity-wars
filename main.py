@@ -55,6 +55,7 @@ def main():
 
     while running:
         clock.tick(FPS)
+        game.update_mouse_pos(pygame.mouse.get_pos())
         game.poll_network()
 
         for event in pygame.event.get():
@@ -76,7 +77,17 @@ def main():
                     game.local_heal()
                 elif pygame.K_1 <= event.key <= pygame.K_4:
                     selected_weapon = event.key - pygame.K_1
-                    game.local_attack(selected_weapon)
+                    game.local_select_weapon(selected_weapon)
+
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                if event.button == 1:  # 1 = Clique Esquerdo
+                    selected_range = game.find_range_from_mouse(event.pos)
+                    if selected_range != None:
+                        game.local_attack(selected_range)
+                elif event.button == 2:  # 2 = Botão do Meio (Scroll)
+                    pass
+                elif event.button == 3:  # 3 = Clique Direito
+                    pass
 
         game.draw(screen, selected_weapon)
         pygame.display.flip()

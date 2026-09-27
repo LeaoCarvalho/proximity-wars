@@ -198,6 +198,7 @@ class GameServer:
     async def process_attack(self, player: int, msg: dict):
         try:
             weapon_id = int(msg.get("weapon"))
+            range = int(msg.get("range"))
         except (TypeError, ValueError):
             await self.send(player, {"type": "error", "message": "Invalid weapon."})
             return
@@ -209,7 +210,7 @@ class GameServer:
         opponent = 1 - player
         distance = abs(self.positions[player] - self.positions[opponent])
         weapon = WEAPONS[weapon_id]
-        hit = distance <= weapon["range"]
+        hit = distance <= range
         damage = weapon["damage"] if hit else 0
 
         if hit:
