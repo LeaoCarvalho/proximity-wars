@@ -162,9 +162,9 @@ class GameClient:
 
             action = msg["action"]
             if action == "move":
-                self.status = "Opponent moved. Your turn."
+                self.status = "Your turn."
             elif action == "heal":
-                self.status = "Opponent healed. Your turn."
+                self.status = "Your turn."
 
         elif t == "attack_result":
             self.my.hp = int(msg["your_hp"])
@@ -196,7 +196,7 @@ class GameClient:
             if msg["hit"]:
                 self.last_result = f"You were hit for {msg['damage']} damage."
             else:
-                self.last_result = "Opponent attacked — MISS."
+                self.last_result = ""
 
             if msg.get("game_over"):
                 self.game_over = True
