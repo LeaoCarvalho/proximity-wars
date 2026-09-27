@@ -12,7 +12,8 @@ BOARD_Y = 235
 
 MAX_HP = 30
 
-HEAL_TILES = {0: 3, 9: 3}
+HEAL_AMOUNT = 8
+HEAL_TILES = {0: HEAL_AMOUNT, 9: HEAL_AMOUNT}
 
 WEAPONS = [
     {"name": "Magic knife", "range": 1, "damage": 20, "desc": "Enchanted knife, a wizard's best friend"},

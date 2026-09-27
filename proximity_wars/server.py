@@ -8,8 +8,9 @@ from fastapi.responses import JSONResponse
 
 BOARD_W = 10
 MAX_HP = 30
+HEAL_AMOUNT = 8
 
-HEAL_TILES = {0: 3, 9: 3}
+HEAL_TILES = {0: HEAL_AMOUNT, 9: HEAL_AMOUNT}
 
 WEAPONS = [
     {"name": "Magic knife", "range": 1, "damage": 20},
@@ -154,7 +155,7 @@ class GameServer:
     async def process_heal(self, player: int):
         # TODO: arrumar as gambiarras
         pos = self.positions[player]
-        amount = 3#HEAL_TILES.get(pos)
+        amount = HEAL_AMOUNT#HEAL_TILES.get(pos)
 
         if not amount:
             await self.send(player, {
