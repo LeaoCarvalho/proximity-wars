@@ -323,7 +323,8 @@ class GameClient:
 
             base = (38, 65, 92) if i <= 4 else (78, 50, 72)
 
-            if rect.collidepoint(self.mouse_pos):
+            selected_range = self.find_range_from_mouse(self.mouse_pos)
+            if rect.collidepoint(self.mouse_pos) and selected_range <= WEAPONS[self.weapon_id]["range"]:
                 light = lambda color : int(color * 1.5)
                 base = (light(base[0]), light(base[1]), light(base[2]))
             
