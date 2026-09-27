@@ -88,13 +88,9 @@ class GameClient:
         if self.my.pos not in HEAL_TILES:
             self.status = "You can only heal on the glowing tile."
             return
-
-        if self.my.hp >= MAX_HP:
-            self.status = "You are already at full health."
-            return
         
         # TODO: Improve
-        if self.player_index == 1:
+        if self.player_index == 0:
             new_heal_tile = rnd.randint(0, 4)
         else:
             new_heal_tile = rnd.randint(5, 9)
@@ -144,6 +140,7 @@ class GameClient:
 
         elif t == "game_start":
             self.player_index = int(msg["player"])
+            self.last_heal_tile = 0 if self.player_index == 0 else 9
             self.my.pos = int(msg["your_pos"])
             self.my.hp = int(msg["your_hp"])
             self.enemy_hp = int(msg["opponent_hp"])
