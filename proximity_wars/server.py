@@ -152,6 +152,7 @@ class GameServer:
         })
 
     async def process_heal(self, player: int):
+        # TODO: arrumar as gambiarras
         pos = self.positions[player]
         amount = 3#HEAL_TILES.get(pos)
 
@@ -159,13 +160,6 @@ class GameServer:
             await self.send(player, {
                 "type": "error",
                 "message": "You can only heal on the glowing tile."
-            })
-            return
-
-        if self.hp[player] >= MAX_HP:
-            await self.send(player, {
-                "type": "error",
-                "message": "You are already at full health."
             })
             return
 
