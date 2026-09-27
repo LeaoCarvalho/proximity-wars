@@ -10,8 +10,6 @@ BOARD_W = 10
 MAX_HP = 30
 HEAL_AMOUNT = 8
 
-# HEAL_TILES = {0: HEAL_AMOUNT, 9: HEAL_AMOUNT}
-
 WEAPONS = [
     {"name": "Magic knife", "range": 1, "damage": 20},
     {"name": "Magical punch", "range": 2, "damage": 10},
@@ -63,6 +61,7 @@ class GameServer:
         self.positions[0] = random.randint(0, 3)
         self.positions[1] = random.randint(6, 9)
         self.turn = 0
+        self.heal_tiles = [{0: HEAL_AMOUNT}, {9: HEAL_AMOUNT}]
         self.started = True
 
         for player in range(2):
@@ -176,7 +175,7 @@ class GameServer:
         self.heal_tiles[player].pop(pos)
         self.heal_tiles[player][new_heal_tile] = amount
 
-        self.next_turn()
+        # self.next_turn()
 
         await self.send(player, {
             "type": "action_result",
@@ -185,16 +184,16 @@ class GameServer:
             "opponent_hp": self.hp[1 - player],
             "heal_tiles": self.heal_tiles[player],
             "turn": self.turn,
-            "your_turn": False,
-        })
-
-        await self.send(1 - player, {
-            "type": "opponent_action",
-            "action": "heal",
-            "opponent_hp": self.hp[player],
-            "turn": self.turn,
             "your_turn": True,
         })
+
+        # await self.send(1 - player, {
+        #     "type": "opponent_action",
+        #     "action": "heal",
+        #     "opponent_hp": self.hp[player],
+        #     "turn": self.turn,
+        #     "your_turn": True,
+        # })
 
     async def process_attack(self, player: int, msg: dict):
         try:

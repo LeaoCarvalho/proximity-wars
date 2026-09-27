@@ -1,5 +1,4 @@
 import pygame
-import random as rnd
 from dataclasses import dataclass
 
 WIDTH, HEIGHT = 1100, 720
@@ -91,8 +90,8 @@ class GameClient:
             return
 
         self.send({"type": "action", "action": "heal"})
-        self.my_turn = False
-        self.status = "Heal sent. Waiting for opponent..."
+        # self.my_turn = False
+        # self.status = "Heal sent. Waiting for opponent..."
 
     def local_attack(self, weapon_id):
         if not self.can_act():
@@ -146,7 +145,6 @@ class GameClient:
                 self.my_heal_tiles = {
                     int(k): v for k, v in msg["heal_tiles"].items()
                 }
-                print(f"self.my_heal_tiles: {self.my_heal_tiles}")
 
         elif t == "action_result":
             self.my.pos = int(msg.get("your_pos", self.my.pos))
@@ -158,7 +156,6 @@ class GameClient:
                 self.my_heal_tiles = {
                     int(k): v for k, v in msg["heal_tiles"].items()
                 }
-                print(f"self.my_heal_tiles: {self.my_heal_tiles}")
 
             if msg["action"] == "move":
                 self.status = "You moved. Waiting for opponent."
