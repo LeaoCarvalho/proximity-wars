@@ -13,12 +13,11 @@ BOARD_Y = 235
 MAX_HP = 30
 
 HEAL_AMOUNT = 8
-HEAL_TILES = {0: HEAL_AMOUNT, 9: HEAL_AMOUNT}
 
 WEAPONS = [
-    {"name": "Magic knife", "range": 1, "damage": 20, "desc": "Enchanted knife, a wizard's best friend"},
+    {"name": "Magic knife", "range": 1, "damage": 20, "desc": "Enchanted knife"},
     {"name": "Magical punch", "range": 2, "damage": 10, "desc": "Ethereal big conjured hand"},
-    {"name": "Fireball", "range": 4, "damage": 5, "desc": 'I CAST FIREBALL'},
+    {"name": "Fireball", "range": 4, "damage": 5, "desc": "I said \"I CAST FIREBALL\""},
     {"name": "Magic bolt", "range": 5, "damage": 4, "desc": "A magical ethereal bolt"},
 ]
 
@@ -36,7 +35,11 @@ class GameClient:
         self.player_index = None
         self.my = PlayerState()
         self.enemy_hp = MAX_HP
-
+        if self.player_index == 0:
+            self.my_heal_tiles = {0: HEAL_AMOUNT}
+        else:
+            self.my_heal_tiles = {9: HEAL_AMOUNT}
+        
         self.peer = None
         self.connected = False
         self.game_started = False
@@ -86,19 +89,9 @@ class GameClient:
         if not self.can_act():
             return
 
-        if self.my.pos not in HEAL_TILES:
+        if self.my.pos not in self.my_heal_tiles:
             self.status = "You can only heal on the glowing tile."
             return
-        
-        # TODO: Improve
-        if self.player_index == 0:
-            new_heal_tile = rnd.randint(0, 4)
-        else:
-            new_heal_tile = rnd.randint(5, 9)
-        tmp = HEAL_TILES[self.last_heal_tile]
-        HEAL_TILES.pop(self.last_heal_tile)
-        HEAL_TILES[new_heal_tile] = tmp
-        self.last_heal_tile = new_heal_tile
 
         self.send({"type": "action", "action": "heal"})
         self.my_turn = False
@@ -160,6 +153,7 @@ class GameClient:
             self.enemy_hp = int(msg["opponent_hp"])
             self.turn = int(msg["turn"])
             self.my_turn = bool(msg["your_turn"])
+            self.my_heal_tiles = dict(msg["heal_tiles"])
 
             if msg["action"] == "move":
                 self.status = "You moved. Waiting for opponent."
@@ -269,7 +263,7 @@ class GameClient:
             base = (38, 65, 92) if i <= 4 else (78, 50, 72)
             pygame.draw.rect(surface, base, rect, border_radius=6)
 
-            if i in HEAL_TILES and i == self.last_heal_tile:
+            if i in self.my_heal_tiles:
                 pygame.draw.rect(surface, (75, 170, 110), rect, 4, border_radius=6)
                 plus = self.big.render("+", True, (135, 245, 160))
                 surface.blit(

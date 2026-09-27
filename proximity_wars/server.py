@@ -27,6 +27,7 @@ class GameServer:
         self.clients: list[WebSocket | None] = [None, None]
         self.positions: list[int | None] = [None, None]
         self.hp = [MAX_HP, MAX_HP]
+        self.heal_tiles = [{0: HEAL_AMOUNT}, {9: HEAL_AMOUNT}]
         self.turn = 0
         self.game_over = False
         self.winner: int | None = None
@@ -155,7 +156,7 @@ class GameServer:
     async def process_heal(self, player: int):
         # TODO: arrumar as gambiarras
         pos = self.positions[player]
-        amount = HEAL_AMOUNT#HEAL_TILES.get(pos)
+        amount = self.heal_tiles[player].get(pos)
 
         if not amount:
             await self.send(player, {
@@ -165,6 +166,15 @@ class GameServer:
             return
 
         self.hp[player] = min(MAX_HP, self.hp[player] + amount)
+
+        if self.player_index == 0:
+            new_heal_tile = random.randint(0, 4)
+        else:
+            new_heal_tile = random.randint(5, 9)
+
+        HEAL_TILES.pop(pos)
+        HEAL_TILES[new_heal_tile] = amount
+
         self.next_turn()
 
         await self.send(player, {
@@ -172,6 +182,7 @@ class GameServer:
             "action": "heal",
             "your_hp": self.hp[player],
             "opponent_hp": self.hp[1 - player],
+            "heal_tiles": HEAL_TILES,
             "turn": self.turn,
             "your_turn": False,
         })
