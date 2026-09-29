@@ -168,9 +168,9 @@ class GameServer:
         self.hp[player] = min(MAX_HP, self.hp[player] + amount)
 
         if player == 0:
-            new_heal_tile = random.randint(0, 4)
+            new_heal_tile = random.randint(0, 3)
         else:
-            new_heal_tile = random.randint(5, 9)
+            new_heal_tile = random.randint(6, 9)
 
         self.heal_tiles[player].pop(pos)
         self.heal_tiles[player][new_heal_tile] = amount
