@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "max_hp": 30,
+  "start": {
+    "p1": "random",
+    "p2": "random"
+  },
+  "cure_ends_turn": false,
+  "cures_per_turn": 1,
+  "cure": {
+    "mode": "custom",
+    "points": {
+      "p1": [
+        {
+          "tile": 1,
+          "value": 8
+        }
+      ],
+      "p2": [
+        {
+          "tile": 10,
+          "value": 8
+        }
+      ]
+    },
+    "cooldown": 0,
+    "recharge": "each",
+    "respawn": "random",
+    "options": {
+      "p1": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "p2": [
+        6,
+        7,
+        8,
+        9,
+        10
+      ]
+    }
+  },
+  "attacks": [
+    {
+      "name": "Magic knife",
+      "damage": 20,
+      "tiles": [
+        1
+      ],
+      "desc": "Enchanted knife"
+    },
+    {
+      "name": "Magical punch",
+      "damage": 10,
+      "tiles": [
+        1,
+        2
+      ],
+      "desc": "Ethereal big conjured hand"
+    },
+    {
+      "name": "Fireball",
+      "damage": 5,
+      "tiles": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "desc": "I said \"I CAST FIREBALL\""
+    },
+    {
+      "name": "Magic bolt",
+      "damage": 4,
+      "tiles": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "desc": "A magical ethereal bolt"
+    }
+  ],
+  "attack_mode": {
+    "type": "default"
+  }
+}
