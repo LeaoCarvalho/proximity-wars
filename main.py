@@ -126,7 +126,6 @@ def main():
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
     pygame.display.set_caption("Proximity Wars")
     try:
-        import pygame.scrap
         pygame.scrap.init()
     except Exception:
         pass
