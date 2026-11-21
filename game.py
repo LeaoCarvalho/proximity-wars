@@ -5,11 +5,16 @@ the client never knows the opponent's position; offline (LocalPeer) both
 wizards can be shown.
 """
 
+import os
+
 import pygame
 
 import sprites
 from rules import DEFAULT_TIER, MAX_DISTANCE
 from ui import BAD, GOOD, WARN, mouse_pos
+from webglue import IS_WEB
+
+TOUCH = IS_WEB          # on-screen buttons instead of keyboard hints
 
 GW, GH = 1920, 1080
 
@@ -26,7 +31,7 @@ NUMBER_Y = 440
 CARD_W, CARD_H = 416, 286    # card template size; cards are drawn at this size, then scaled
 CARD_MAX_W = 410
 CARD_GAP = 18
-HAND_BOTTOM = 977
+HAND_BOTTOM = 977          # 945 with the touch bar, see below
 
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
@@ -42,10 +47,19 @@ _fonts = {}
 _texts = {}
 
 
+FONT_DIR = os.path.join(sprites.ASSETS, "fonts")
+
+
 def gfont(size, bold=True):
+    """assets/fonts/game-bold.ttf / game-regular.ttf if present (any free font, e.g. Carlito),
+    otherwise Calibri / Segoe UI / Arial from the system."""
     key = (size, bold)
     if key not in _fonts:
-        _fonts[key] = pygame.font.SysFont("calibri,segoeui,arial", size, bold=bold)
+        path = os.path.join(FONT_DIR, "game-bold.ttf" if bold else "game-regular.ttf")
+        if os.path.exists(path):
+            _fonts[key] = pygame.font.Font(path, size)
+        else:
+            _fonts[key] = pygame.font.SysFont("calibri,segoeui,arial", size, bold=bold)
     return _fonts[key]
 
 
@@ -173,6 +187,23 @@ PLAYERS = {                      # game mode -> who sits in seats 1 and 2
     "bot_vs_bot": ("bot", "bot"),
 }
 FEEDBACK_BUTTON = pygame.Rect(GW // 2 - 190, 620, 380, 70)
+MENU_BUTTON = pygame.Rect(GW // 2 - 190, 710, 380, 70)          # game over / waiting screens
+TOUCH_Y, TOUCH_H, TOUCH_GAP = 958, 112, 18                       # on-screen control bar (finger-sized)
+if TOUCH:
+    HAND_BOTTOM = 945
+
+
+def draw_button(surface, rect, label, mouse, enabled=True, primary=False, size=34):
+    hover = enabled and rect.collidepoint(mouse)
+    if not enabled:
+        fill = (30, 18, 45)
+    elif primary:
+        fill = (40, 130, 70) if hover else (30, 105, 55)
+    else:
+        fill = (70, 40, 110) if hover else (45, 24, 75)
+    pygame.draw.rect(surface, fill, rect, border_radius=16)
+    pygame.draw.rect(surface, WHITE if enabled else (90, 80, 110), rect, 3, border_radius=16)
+    draw_text(surface, label, rect.center, size, WHITE if enabled else (120, 110, 140))
 
 
 class GameScreen:
@@ -212,9 +243,13 @@ class GameScreen:
             from local_peer import LocalPeer
             self.peer = LocalPeer(self.hello_config, players=self.players)
             return
-        from net_peer import NetPeer
         try:
-            self.peer = NetPeer(self.ws_url)
+            if IS_WEB:
+                from webglue import BrowserPeer
+                self.peer = BrowserPeer(self.ws_url)
+            else:
+                from net_peer import NetPeer
+                self.peer = NetPeer(self.ws_url)
         except Exception as exc:
             self.status, self.status_color = f"Connection failed: {exc}", BAD
             return
@@ -356,6 +391,58 @@ class GameScreen:
             return
         self.send({"type": "action", "action": "attack", "card": self.selected})
 
+    def back_to_menu(self):
+        self.close()
+        self.app.show_menu()
+
+    def move(self, direction):
+        if self.can_act():
+            self.send({"type": "action", "action": "move", "direction": direction})
+
+    def cure(self):
+        if self.can_act():
+            self.send({"type": "action", "action": "heal"})
+
+    def toggle_speed(self):
+        self.fast = not self.fast
+        self.send({"type": "speed", "fast": self.fast})
+
+    def toggle_reveal(self):
+        self.reveal = not self.reveal
+
+    def switch_player(self):
+        if self.hot_seat and self.peer:
+            self.peer.switch()
+
+    def touch_buttons(self):
+        """[(rect, label, action, enabled, primary)] for the on-screen control bar."""
+        s = self.state
+        if not TOUCH or not s or s["game_over"]:
+            return []
+        if self.spectator:
+            items = [("MENU", self.back_to_menu, True, False, 220),
+                     (f"SPEED: {'FAST' if self.fast else 'NORMAL'}", self.toggle_speed, True, False, 380)]
+        else:
+            mine = s["your_turn"]
+            can_cure = mine and s["cures_left_this_turn"] > 0 and any(
+                c["active"] and c["tile"] == s["your_pos"] for c in s["cures"])
+            items = [("MENU", self.back_to_menu, True, False, 200),
+                     ("<  MOVE", lambda: self.move(-1), mine, False, 240),
+                     ("MOVE  >", lambda: self.move(1), mine, False, 240),
+                     ("CURE", self.cure, can_cure, False, 220),
+                     ("CAST", self.attack, mine and bool(s["hand"]), True, 260)]
+            if self.hot_seat:
+                items.append(("SWITCH", self.switch_player, True, False, 220))
+            if self.offline:
+                items.append(("HIDE OPP." if self.reveal else "SHOW OPP.", self.toggle_reveal, True, False, 240))
+        total = sum(w for *_, w in items) + TOUCH_GAP * (len(items) - 1)
+        x = (GW - total) // 2
+        out = []
+        for label, action, enabled, primary, w in items:
+            out.append((pygame.Rect(x, TOUCH_Y, w, TOUCH_H), label, action, enabled, primary))
+            x += w + TOUCH_GAP
+        return out
+
     def open_feedback(self):
         match_id = self.match_id
         self.close()
@@ -399,9 +486,19 @@ class GameScreen:
                 if i < len(s["hand"]):
                     self.selected = i
 
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and (
+                not s or over) and MENU_BUTTON.collidepoint(event.pos):
+            self.back_to_menu()
+
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and over:
             if FEEDBACK_BUTTON.collidepoint(event.pos):
                 self.open_feedback()
+
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and any(
+                r.collidepoint(event.pos) for r, *_ in self.touch_buttons()):
+            for r, _, action, enabled, _ in self.touch_buttons():
+                if r.collidepoint(event.pos) and enabled:
+                    action()
 
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and s and not self.spectator:
             for i, r in enumerate(self.offer_layout()):
@@ -510,7 +607,8 @@ class GameScreen:
 
     def draw_card(self, surface, rect, card, selected=False, hover=False, dim=False):
         img = scaled_card(card, rect.w)
-        r = rect.move(0, -26 if selected else -10 if hover else 0)
+        lift = 12 if TOUCH else 26   # the touch layout has less room above the cards
+        r = rect.move(0, -lift if selected else -10 if hover else 0)
         if selected:
             pygame.draw.rect(surface, WHITE, r.inflate(14, 14), 5, border_radius=16)
         surface.blit(img, r)
@@ -531,9 +629,9 @@ class GameScreen:
                 self.drawn_once = True
                 return
             draw_text(surface, self.status, (GW // 2, 500), 36, self.status_color, outline=2)
-            draw_text(surface, "Esc: back to menu", (GW // 2, 560), 26, FAINT, outline=2)
             for i, line in enumerate(self.log):
-                draw_text(surface, line, (GW // 2, 620 + i * 34), 26, SOFT, outline=2)
+                draw_text(surface, line, (GW // 2, 560 + i * 34), 26, SOFT, outline=2)
+            draw_button(surface, MENU_BUTTON, "Back to menu", mouse_pos())
             return
 
         me, max_hp = s["player"], s["max_hp"]
@@ -604,7 +702,10 @@ class GameScreen:
                 self.draw_card(surface, r, card, hover=r.collidepoint(mouse))
 
         # controls --------------------------------------------------------------
-        if self.spectator:
+        if TOUCH:
+            for r, label, _, enabled, primary in self.touch_buttons():
+                draw_button(surface, r, label, mouse, enabled, primary, size=40)
+        elif self.spectator:
             speed = "fast" if self.fast else "normal"
             hint = f"S: bot speed ({speed})    Esc: menu"
         else:
@@ -613,15 +714,13 @@ class GameScreen:
                 hint += "    Tab: switch player"
             if self.offline:
                 hint += "    V: show/hide opponent"
-        draw_text(surface, hint, (GW // 2, 1052), 22, FAINT, outline=2)
+        if not TOUCH:
+            draw_text(surface, hint, (GW // 2, 1052), 22, FAINT, outline=2)
 
         if s["game_over"]:
             overlay = pygame.Surface((GW, GH), pygame.SRCALPHA)
             overlay.fill((0, 0, 0, 160))
             surface.blit(overlay, (0, 0))
             draw_text(surface, self.status, (GW // 2, 440), 120, self.status_color, outline=5)
-            draw_text(surface, "Enter or Esc: back to menu", (GW // 2, 560), 34, SOFT, outline=2)
-            hover = FEEDBACK_BUTTON.collidepoint(mouse)
-            pygame.draw.rect(surface, (70, 40, 110) if hover else (45, 24, 75), FEEDBACK_BUTTON, border_radius=16)
-            pygame.draw.rect(surface, WHITE, FEEDBACK_BUTTON, 3, border_radius=16)
-            draw_text(surface, "Send feedback (F)", FEEDBACK_BUTTON.center, 34)
+            draw_button(surface, FEEDBACK_BUTTON, "Send feedback" if TOUCH else "Send feedback (F)", mouse)
+            draw_button(surface, MENU_BUTTON, "Back to menu", mouse)

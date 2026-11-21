@@ -20,7 +20,7 @@ Use:
 
 ```text
 Build Command:
-pip install -r requirements-server.txt
+pip install -r requirements-server.txt && python build_web.py
 
 Start Command:
 uvicorn server:app --host 0.0.0.0 --port $PORT
@@ -28,6 +28,7 @@ uvicorn server:app --host 0.0.0.0 --port $PORT
 
 The service exposes:
 
+- `GET /` and `/play/` — the game in the browser (phones and computers, see "Browser version")
 - `GET /health` — Render health check
 - `GET /` — basic status
 - `WS /ws` — game connection
@@ -79,6 +80,34 @@ python main.py --host wss://YOUR-SERVICE.onrender.com/ws
 ```
 
 The server address can also be edited on the menu screen.
+
+## Browser version (phones and computers)
+
+`python build_web.py` turns the Pygame client into a web page with [pygbag](https://pypi.org/project/pygbag/) and puts it in `web_dist/`. The server serves it at `/play/`, and `/` redirects there, so on Render the game is simply `https://YOUR-SERVICE.onrender.com`. Render runs `build_web.py` as part of the build command above, so every deploy rebuilds it.
+
+- On touch screens the match has on-screen buttons (Menu, Move, Cure, Cast, and Switch / Show opponent / Speed where they apply). Tap a card to select it, tap a red tile or CAST to cast it.
+- Text boxes (server, match code, feedback, setup fields) open the phone's own text prompt and keyboard.
+- The game is landscape: holding the phone upright shows "Turn your phone sideways".
+- The browser connects to the server that served the page, so nothing has to be typed in.
+- Every mode works in the browser, including the offline ones (they run in the page).
+- The first load downloads Python and pygame for the browser (a few MB, from pygbag's CDN), so it takes a few seconds; later loads are cached.
+- Copy / paste of match JSON goes through a text prompt, and Load / Save files are not useful in the browser.
+
+To try it locally:
+
+```bash
+pip install pygbag==0.9.2
+```
+
+```bash
+python build_web.py
+```
+
+```bash
+uvicorn server:app --port 8000
+```
+
+Then open `http://127.0.0.1:8000/play/`. Use `127.0.0.1`, not `localhost`: on `localhost` pygbag expects its own development server and fails to load. Add `#debug` to the address to see the Python console.
 
 ## Rules test lab
 
@@ -162,6 +191,8 @@ Cooldowns count the owner's own turns: `1` means the cure is available again on 
 - `metrics.py`: match records, feedback, and the summary numbers
 - `main.py`, `setup_screen.py`, `game.py`, `ui.py`, `sprites.py`: Pygame client (the match screen is drawn at 1920x1080 and scaled to the window, which can be resized)
 - `local_peer.py`: offline mode (hot seat, vs bot, bot vs bot), runs the match in-process
+- `webglue.py`: browser-only pieces (WebSocket, text prompts, clipboard, tap positions, feedback POST)
+- `build_web.py`: builds the browser version into `web_dist/`
 - `feedback_screen.py`: the feedback form
 - `assets/`: sprites, card templates, distance meter and background (client only)
 

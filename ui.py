@@ -5,6 +5,8 @@ import sys
 
 import pygame
 
+from webglue import IS_WEB
+
 WIDTH, HEIGHT = 1100, 720
 FPS = 60
 
@@ -91,6 +93,9 @@ def wrap_text(s, size, max_width):
 # Clipboard
 # ----------------------------------------------------------------------
 def copy_to_clipboard(s):
+    if IS_WEB:
+        from webglue import copy_text
+        return copy_text(s)
     try:
         if hasattr(pygame.scrap, "put_text"):
             pygame.scrap.put_text(s)
@@ -117,6 +122,9 @@ def copy_to_clipboard(s):
 
 
 def paste_from_clipboard():
+    if IS_WEB:  # Python can't read the browser clipboard: ask the player to paste into a prompt
+        from webglue import ask_text
+        return ask_text("Paste here:", "") or ""
     try:
         if hasattr(pygame.scrap, "get_text"):
             value = pygame.scrap.get_text()
@@ -194,10 +202,11 @@ class Button(Widget):
 class TextField(Widget):
     focused = None
 
-    def __init__(self, value="", w=160, h=34, placeholder="", max_len=200, size=18):
+    def __init__(self, value="", w=160, h=34, placeholder="", max_len=200, size=18, label=""):
         super().__init__(w, h)
         self.value = str(value)
         self.placeholder = placeholder
+        self.label = label          # shown in the browser's text prompt
         self.max_len = max_len
         self.size = size
         self.invalid = False
@@ -209,6 +218,13 @@ class TextField(Widget):
     def handle(self, event):
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             if self.rect.collidepoint(event.pos):
+                if IS_WEB:
+                    # a native prompt brings up the phone's keyboard; there is no typing into the canvas
+                    from webglue import ask_text
+                    answer = ask_text(self.label or self.placeholder or "Enter a value:", self.value)
+                    if answer is not None:
+                        self.value = answer[: self.max_len]
+                    return True
                 TextField.focused = self
                 return True
             return False
@@ -262,8 +278,8 @@ NEWLINE, CARRIAGE_RETURN = chr(10), chr(13)
 class TextArea(TextField):
     """Multi-line text box: Enter adds a new line, Esc / Tab leave it."""
 
-    def __init__(self, value="", w=600, h=220, placeholder="", max_len=2000, size=18):
-        super().__init__(value, w, h, placeholder, max_len, size)
+    def __init__(self, value="", w=600, h=220, placeholder="", max_len=2000, size=18, label=""):
+        super().__init__(value, w, h, placeholder, max_len, size, label)
 
     def handle(self, event):
         if TextField.focused is self and event.type == pygame.KEYDOWN:

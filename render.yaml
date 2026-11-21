@@ -2,6 +2,6 @@ services:
   - type: web
     name: proximity-wars-host
     runtime: python
-    buildCommand: pip install -r requirements-server.txt
+    buildCommand: pip install -r requirements-server.txt && python build_web.py
     startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health

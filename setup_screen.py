@@ -68,6 +68,7 @@ class SetupScreen:
         self.app = app
         self.msg = Messages()
         self.scroll = 0
+        self.drag_y = None
         colors = region_color
 
         start_opts = lambda tiles: [("random", "Random")] + [(t, f"Tile {t}") for t in tiles]  # noqa: E731
@@ -107,7 +108,7 @@ class SetupScreen:
         self.btn_classic = Button("Classic 4", self._use_classic)
         self.btn_sample = Button("Sample bank (15)", self._use_sample)
 
-        self.path = TextField("match.json", w=150, placeholder="file.json")
+        self.path = TextField("match.json", w=150, placeholder="file.json", label="File name")
         self.bottom_buttons = [
             Button("Back", app.show_menu),
             Button("Copy JSON", self.copy_json),
@@ -383,6 +384,8 @@ class SetupScreen:
                 h = max(w.rect.h for w in widgets) + 12
                 x = self.WIDGET_X
                 for w in widgets:
+                    if isinstance(w, TextField) and not w.label:
+                        w.label = item[1]
                     w.place(x, y + 4)
                     x += w.rect.w + 10
                     if self.TOP <= w.rect.y and w.rect.bottom <= self.BOTTOM:
@@ -402,10 +405,16 @@ class SetupScreen:
 
     def handle(self, event):
         self.layout()
+        max_scroll = max(0, self.content_h - (self.BOTTOM - self.TOP))
         if event.type == pygame.MOUSEWHEEL:
-            max_scroll = max(0, self.content_h - (self.BOTTOM - self.TOP))
             self.scroll = min(max_scroll, max(0, self.scroll - event.y * 40))
             return
+        if event.type == pygame.MOUSEMOTION and self.drag_y is not None:
+            self.scroll = min(max_scroll, max(0, self.scroll - (event.pos[1] - self.drag_y)))
+            self.drag_y = event.pos[1]
+            return
+        if event.type == pygame.MOUSEBUTTONUP:
+            self.drag_y = None
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             TextField.blur()
         if event.type == pygame.MOUSEBUTTONDOWN and event.pos[1] > self.BOTTOM:
@@ -415,6 +424,9 @@ class SetupScreen:
         for w in candidates:
             if w.handle(event):
                 return
+        if (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
+                and self.TOP <= event.pos[1] <= self.BOTTOM):
+            self.drag_y = event.pos[1]  # pressed on empty space: drag to scroll
         if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
             self.app.show_menu()
 
@@ -477,10 +489,10 @@ class AttackEditor:
         self.selected = -1
 
         fx = 470
-        self.name = TextField(w=300, max_len=40).place(fx + 130, 90)
-        self.damage = TextField(w=100, max_len=4).place(fx + 130, 136)
+        self.name = TextField(w=300, max_len=40, label="Attack name").place(fx + 130, 90)
+        self.damage = TextField(w=100, max_len=4, label="Damage").place(fx + 130, 136)
         self.tier = Cycle([(t, t.capitalize()) for t in CARD_TIERS], w=150).place(fx + 300, 136)
-        self.desc = TextField(w=300, max_len=80).place(fx + 130, 182)
+        self.desc = TextField(w=300, max_len=80, label="Description").place(fx + 130, 182)
         self.tiles = TilePicker(range(1, MAX_DISTANCE + 1), box=48).place(fx + 130, 250)
         quick = [("All", lambda d: True), ("None", lambda d: False),
                  ("Even", lambda d: d % 2 == 0), ("Odd", lambda d: d % 2 == 1),
@@ -501,7 +513,7 @@ class AttackEditor:
             self.list_buttons.append(b)
             x += b.rect.w + 6
 
-        self.path = TextField("attacks.json", w=200, placeholder="file.json")
+        self.path = TextField("attacks.json", w=200, placeholder="file.json", label="File name")
         self.bottom = [
             Button("Cancel", self.cancel),
             Button("Copy JSON", self.copy_json),

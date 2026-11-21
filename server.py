@@ -25,7 +25,8 @@ import os
 import random
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from metrics import MetricsStore
 from rules import ConfigError, default_config, validate_config
@@ -36,6 +37,7 @@ CODE_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ"   # no I / O, easy to read out loud
 BOT = "bot"
 SPECTATOR = "spectator"
 METRICS_TOKEN = os.environ.get("METRICS_TOKEN")
+WEB_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web_dist")   # made by build_web.py
 
 store = MetricsStore()
 
@@ -271,7 +273,15 @@ async def health():
 
 @app.get("/")
 async def root():
+    if os.path.isdir(WEB_DIST):
+        return RedirectResponse("/play/")
+    return await info()
+
+
+@app.get("/info")
+async def info():
     return JSONResponse({"game": "Proximity Wars", "status": "online", "websocket": "/ws",
+                         "play_in_browser": "/play/" if os.path.isdir(WEB_DIST) else None,
                          "metrics": "/metrics", "feedback": "POST /feedback"})
 
 
@@ -331,3 +341,8 @@ async def websocket_endpoint(websocket: WebSocket):
         print(f"Connection error: {exc}")
     finally:
         await lobby.leave(websocket)
+
+
+# The browser version (python build_web.py). Mounted last so it never shadows the routes above.
+if os.path.isdir(WEB_DIST):
+    app.mount("/play", StaticFiles(directory=WEB_DIST, html=True), name="play")

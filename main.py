@@ -1,12 +1,17 @@
 import argparse
+import asyncio
 import sys
 
 import pygame
+
+from webglue import IS_WEB
 
 from rules import ConfigError, validate_config
 from ui import BG, DIM, FPS, HEIGHT, MUTED, WIDTH, Button, TextField, set_view, text, to_canvas
 
 DEFAULT_PORT = 8000
+WEB_WINDOW = (1920, 1080)   # browser canvas; the page scales it to the screen with CSS
+WEB_FPS = 30
 
 
 def make_ws_url(host, port=DEFAULT_PORT):
@@ -47,6 +52,16 @@ def fit_canvas(canvas_size, window_size_):
     return scale, (ww - round(cw * scale)) // 2, (wh - round(ch * scale)) // 2
 
 
+def draw_rotate_hint(window):
+    """Phones held upright show the game tiny: ask to turn the phone."""
+    w, h = window.get_size()
+    shade = pygame.Surface((w, h), pygame.SRCALPHA)
+    shade.fill((10, 6, 20, 225))
+    window.blit(shade, (0, 0))
+    text(window, "Turn your phone sideways", (w // 2, h // 2 - 60), 110, bold=True, center=True)
+    text(window, "Proximity Wars is played in landscape.", (w // 2, h // 2 + 80), 60, MUTED, center=True)
+
+
 def present(window, canvas, scale, ox, oy):
     if scale == 1.0 and ox == 0 and oy == 0:
         window.blit(canvas, (0, 0))
@@ -61,9 +76,9 @@ class MenuScreen:
 
     def __init__(self, app):
         self.app = app
-        self.server = TextField(app.server, w=420, placeholder="127.0.0.1:8000 or https://...")
+        self.server = TextField(app.server, w=420, placeholder="127.0.0.1:8000 or https://...", label="Server address")
         self.server.place(WIDTH // 2 - 340, 230)
-        self.room = TextField(app.room, w=150, max_len=8, placeholder="any")
+        self.room = TextField(app.room, w=150, max_len=8, placeholder="any", label="Match code (empty = any public match)")
         self.room.place(WIDTH // 2 + 190, 230)
         left, right = WIDTH // 2 - self.COL_W - 10, WIDTH // 2 + 10
         w, h = self.COL_W, 44
@@ -77,8 +92,9 @@ class MenuScreen:
             Button("Play vs bot", lambda: app.launch("bot", offline=True), w=w, h=h).place(right, 382),
             Button("Watch bot vs bot", lambda: app.launch("bot_vs_bot", offline=True), w=w, h=h).place(right, 434),
             Button("Send feedback", app.show_feedback, w=w, h=h).place(left, 580),
-            Button("Quit", app.quit, w=w, h=h).place(right, 580),
         ]
+        if not IS_WEB:
+            self.buttons.append(Button("Quit", app.quit, w=w, h=h).place(right, 580))
 
     def handle(self, event):
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -88,7 +104,7 @@ class MenuScreen:
             if w.handle(event):
                 self.update()
                 return
-        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE and not IS_WEB:
             self.app.quit()
 
     def update(self):
@@ -179,7 +195,7 @@ class App:
         self.running = False
 
 
-def main():
+def parse_args():
     parser = argparse.ArgumentParser(description="Proximity Wars client")
     parser.add_argument("--host", default="127.0.0.1",
                         help="Host/IP, host:port, HTTP(S) URL, or WebSocket URL of the server")
@@ -193,11 +209,20 @@ def main():
                         help="Play on this computer without a server (uses --config if given)")
     parser.add_argument("--bot", action="store_true", help="Play against the bot")
     parser.add_argument("--bot-vs-bot", action="store_true", help="Watch two bots play")
-    args = parser.parse_args()
+    if IS_WEB:
+        return parser.parse_args([])
+    return parser.parse_args()
 
-    server = args.host
-    if "://" not in server and ":" not in server:
-        server = f"{server}:{args.port}"
+
+async def run():
+    args = parse_args()
+    if IS_WEB:
+        from webglue import page_origin
+        server = page_origin() or "127.0.0.1:8000"   # the server that hosts the page
+    else:
+        server = args.host
+        if "://" not in server and ":" not in server:
+            server = f"{server}:{args.port}"
 
     cfg = None
     if args.config:
@@ -211,15 +236,21 @@ def main():
             sys.exit(1)
 
     pygame.init()
-    info = pygame.display.Info()
-    pygame.display.set_mode(window_size(info.current_w, info.current_h), pygame.RESIZABLE)
+    if IS_WEB:
+        pygame.display.set_mode(WEB_WINDOW)
+        from webglue import is_portrait, pointer_pos, track_pointer
+        track_pointer()
+    else:
+        info = pygame.display.Info()
+        pygame.display.set_mode(window_size(info.current_w, info.current_h), pygame.RESIZABLE)
+        pygame.key.start_text_input()
     pygame.display.set_caption("Proximity Wars")
     try:
         pygame.scrap.init()
     except Exception:
         pass
-    pygame.key.start_text_input()
     clock = pygame.time.Clock()
+    fps = WEB_FPS if IS_WEB else FPS
 
     app = App(server, args.room.strip().upper())
     mode = "bot_vs_bot" if args.bot_vs_bot else "bot" if args.bot else "pvp"
@@ -231,8 +262,9 @@ def main():
         app.join_match()
 
     canvases = {}
+    frame, portrait = 0, False
     while app.running:
-        clock.tick(FPS)
+        clock.tick(fps)
         window = pygame.display.get_surface()
         size = getattr(app.screen, "size", (WIDTH, HEIGHT))
         if size not in canvases:
@@ -246,17 +278,31 @@ def main():
                 app.running = False
             else:
                 if hasattr(event, "pos") and event.type != pygame.VIDEORESIZE:
-                    event = pygame.event.Event(event.type, {**event.dict, "pos": to_canvas(event.pos)})
+                    pos = event.pos
+                    if IS_WEB and event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
+                        pos = pointer_pos() or pos   # where the finger really touched
+                    event = pygame.event.Event(event.type, {**event.dict, "pos": to_canvas(pos)})
                 app.screen.handle(event)
         app.screen.update()
         app.screen.draw(canvas)
         present(window, canvas, scale, ox, oy)
+        if IS_WEB:
+            frame += 1
+            if frame % 15 == 0:
+                portrait = is_portrait()
+            if portrait:
+                draw_rotate_hint(window)
         pygame.display.flip()
+        await asyncio.sleep(0)   # lets the browser breathe (no-op cost on the desktop)
 
     close = getattr(app.screen, "close", None)
     if close:
         close()
     pygame.quit()
+
+
+def main():
+    asyncio.run(run())
 
 
 if __name__ == "__main__":

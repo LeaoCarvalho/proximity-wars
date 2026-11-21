@@ -9,6 +9,7 @@ import urllib.request
 import pygame
 
 from metrics import MetricsStore
+from webglue import IS_WEB
 from ui import BAD, BG, DIM, GOOD, MUTED, WARN, WIDTH, Button, Cycle, TextArea, TextField, text
 
 RATINGS = [(None, "No rating"), (1, "1 - Bad"), (2, "2 - Meh"), (3, "3 - OK"), (4, "4 - Good"), (5, "5 - Great")]
@@ -33,14 +34,16 @@ class FeedbackScreen:
         self.app = app
         self.match_id = match_id
         self.body = TextArea(w=760, h=260, placeholder="What did you like? What felt wrong or confusing?",
-                             max_len=2000).place(WIDTH // 2 - 380, 150)
+                             label="Your feedback", max_len=2000).place(WIDTH // 2 - 380, 150)
         self.rating = Cycle(RATINGS, w=220).place(WIDTH // 2 - 380, 450)
         self.send_button = Button("Send", self.send, w=160, h=44, primary=True).place(WIDTH // 2 + 220, 520)
         self.buttons = [Button("Back", app.show_menu, w=160, h=44).place(WIDTH // 2 - 380, 520), self.send_button]
         self.message, self.color = "", MUTED
         self.sending = False
         self.result = None
-        TextField.focused = self.body
+        self.web_post = None
+        if not IS_WEB:
+            TextField.focused = self.body
 
     def send(self):
         if self.sending:
@@ -53,6 +56,10 @@ class FeedbackScreen:
         url = self.app.http_url()
         self.sending = True
         self.message, self.color = "Sending...", WARN
+        if IS_WEB:  # no threads in the browser: let the page's fetch() do it
+            from webglue import post_json
+            self.web_post = post_json(url.rstrip("/") + "/feedback", entry)
+            return
 
         def work():
             ok, reason = send_feedback(url, entry)
@@ -78,6 +85,13 @@ class FeedbackScreen:
             self.app.show_menu()
 
     def update(self):
+        if self.web_post:
+            from webglue import post_result
+            r = post_result(self.web_post)
+            if r:
+                self.web_post = None
+                self.result = (True, "Thank you! Your feedback was sent.") if r == "ok" else \
+                    (False, f"Could not reach the server ({r}). Please try again later.")
         if self.result:
             ok, msg = self.result
             self.result = None
@@ -98,4 +112,5 @@ class FeedbackScreen:
         for b in self.buttons:
             b.draw(surface)
         text(surface, self.message, (WIDTH // 2, 600), 17, self.color, center=True)
-        text(surface, "Enter adds a new line. Esc: back to menu.", (WIDTH // 2, 680), 15, DIM, center=True)
+        hint = "Tap the box to type." if IS_WEB else "Enter adds a new line. Esc: back to menu."
+        text(surface, hint, (WIDTH // 2, 680), 15, DIM, center=True)
