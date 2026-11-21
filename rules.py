@@ -41,25 +41,29 @@ ATTACK_MODE_NAMES = {
 MAX_HAND = 9
 MAX_ATTACKS = 60
 
+# Card frame per attack: assets/card_<tier>.png
+CARD_TIERS = ("bronze", "silver", "gold")
+DEFAULT_TIER = "bronze"
+
 CLASSIC_ATTACKS = [
-    {"name": "Magic knife", "damage": 20, "tiles": [1], "desc": "Enchanted knife"},
-    {"name": "Magical punch", "damage": 10, "tiles": [1, 2], "desc": "Ethereal big conjured hand"},
-    {"name": "Fireball", "damage": 5, "tiles": [1, 2, 3, 4], "desc": "I said \"I CAST FIREBALL\""},
-    {"name": "Magic bolt", "damage": 4, "tiles": [1, 2, 3, 4, 5], "desc": "A magical ethereal bolt"},
+    {"name": "Magic knife", "damage": 20, "tiles": [1], "desc": "Enchanted knife", "tier": "gold"},
+    {"name": "Magical punch", "damage": 10, "tiles": [1, 2], "desc": "Ethereal big conjured hand", "tier": "silver"},
+    {"name": "Fireball", "damage": 5, "tiles": [1, 2, 3, 4], "desc": "I said \"I CAST FIREBALL\"", "tier": "bronze"},
+    {"name": "Magic bolt", "damage": 4, "tiles": [1, 2, 3, 4, 5], "desc": "A magical ethereal bolt", "tier": "bronze"},
 ]
 
 SAMPLE_BANK = CLASSIC_ATTACKS + [
-    {"name": "Lance", "damage": 14, "tiles": [2], "desc": "Exactly two tiles away"},
-    {"name": "Long spear", "damage": 12, "tiles": [3], "desc": "Exactly three tiles away"},
-    {"name": "Whip", "damage": 12, "tiles": [2, 3], "desc": "Cracks at mid range"},
-    {"name": "Arc bolt", "damage": 8, "tiles": [3, 4, 5], "desc": "Arcs over close targets"},
-    {"name": "Meteor", "damage": 10, "tiles": [4, 5, 6], "desc": "Falls far away"},
-    {"name": "Sniper hex", "damage": 8, "tiles": [6, 7, 8, 9], "desc": "Only hits far targets"},
-    {"name": "Ricochet", "damage": 11, "tiles": [1, 5, 9], "desc": "Bounces in big steps"},
-    {"name": "Even storm", "damage": 9, "tiles": [2, 4, 6, 8], "desc": "Only even distances"},
-    {"name": "Odd storm", "damage": 7, "tiles": [1, 3, 5, 7, 9], "desc": "Only odd distances"},
-    {"name": "Ward breaker", "damage": 7, "tiles": [1, 2, 3], "desc": "Short-range burst"},
-    {"name": "Shockwave", "damage": 3, "tiles": [1, 2, 3, 4, 5, 6, 7, 8, 9], "desc": "Hits everything"},
+    {"name": "Lance", "damage": 14, "tiles": [2], "desc": "Exactly two tiles away", "tier": "gold"},
+    {"name": "Long spear", "damage": 12, "tiles": [3], "desc": "Exactly three tiles away", "tier": "silver"},
+    {"name": "Whip", "damage": 12, "tiles": [2, 3], "desc": "Cracks at mid range", "tier": "silver"},
+    {"name": "Arc bolt", "damage": 8, "tiles": [3, 4, 5], "desc": "Arcs over close targets", "tier": "bronze"},
+    {"name": "Meteor", "damage": 10, "tiles": [4, 5, 6], "desc": "Falls far away", "tier": "silver"},
+    {"name": "Sniper hex", "damage": 8, "tiles": [6, 7, 8, 9], "desc": "Only hits far targets", "tier": "silver"},
+    {"name": "Ricochet", "damage": 11, "tiles": [1, 5, 9], "desc": "Bounces in big steps", "tier": "silver"},
+    {"name": "Even storm", "damage": 9, "tiles": [2, 4, 6, 8], "desc": "Only even distances", "tier": "silver"},
+    {"name": "Odd storm", "damage": 7, "tiles": [1, 3, 5, 7, 9], "desc": "Only odd distances", "tier": "bronze"},
+    {"name": "Ward breaker", "damage": 7, "tiles": [1, 2, 3], "desc": "Short-range burst", "tier": "bronze"},
+    {"name": "Shockwave", "damage": 3, "tiles": [1, 2, 3, 4, 5, 6, 7, 8, 9], "desc": "Hits everything", "tier": "bronze"},
 ]
 
 CURE_DEFAULTS = {
@@ -220,7 +224,18 @@ def _validate_attack(check, raw, path):
     if not isinstance(desc, str):
         check.error(f"{path}.desc", "must be text")
         desc = ""
-    return {"name": name.strip()[:40], "damage": damage or 0, "tiles": sorted(tiles), "desc": desc[:80]}
+    tier = raw.get("tier", DEFAULT_TIER)
+    if tier not in CARD_TIERS:
+        check.error(f"{path}.tier", f"must be one of {', '.join(CARD_TIERS)}")
+        tier = DEFAULT_TIER
+    attack = {"name": name.strip()[:40], "damage": damage or 0, "tiles": sorted(tiles), "desc": desc[:80],
+              "tier": tier}
+    art = raw.get("art", "")
+    if not isinstance(art, str):
+        check.error(f"{path}.art", "must be a file name in assets/art")
+    elif art.strip():
+        attack["art"] = art.strip()[:80]
+    return attack
 
 
 def validate_attacks(raw, path="attacks"):

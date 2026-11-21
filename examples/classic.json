@@ -50,7 +50,8 @@
       "tiles": [
         1
       ],
-      "desc": "Enchanted knife"
+      "desc": "Enchanted knife",
+      "tier": "gold"
     },
     {
       "name": "Magical punch",
@@ -59,7 +60,8 @@
         1,
         2
       ],
-      "desc": "Ethereal big conjured hand"
+      "desc": "Ethereal big conjured hand",
+      "tier": "silver"
     },
     {
       "name": "Fireball",
@@ -70,7 +72,8 @@
         3,
         4
       ],
-      "desc": "I said \"I CAST FIREBALL\""
+      "desc": "I said \"I CAST FIREBALL\"",
+      "tier": "bronze"
     },
     {
       "name": "Magic bolt",
@@ -82,7 +85,8 @@
         4,
         5
       ],
-      "desc": "A magical ethereal bolt"
+      "desc": "A magical ethereal bolt",
+      "tier": "bronze"
     }
   ],
   "attack_mode": {

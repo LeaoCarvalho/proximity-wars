@@ -26,6 +26,24 @@ CURE = (75, 170, 110)
 _fonts = {}
 
 
+# The app draws each screen on a fixed-size canvas and scales it into the
+# window; this maps window pixels back to canvas pixels.
+_view = [1.0, 0, 0]
+
+
+def set_view(scale, ox, oy):
+    _view[:] = [scale, ox, oy]
+
+
+def to_canvas(pos):
+    scale, ox, oy = _view
+    return (int((pos[0] - ox) / scale), int((pos[1] - oy) / scale))
+
+
+def mouse_pos():
+    return to_canvas(pygame.mouse.get_pos())
+
+
 def font(size=20, bold=False):
     key = (size, bold)
     if key not in _fonts:
@@ -160,7 +178,7 @@ class Button(Widget):
         return False
 
     def draw(self, surface):
-        hover = self.enabled and self.rect.collidepoint(pygame.mouse.get_pos())
+        hover = self.enabled and self.rect.collidepoint(mouse_pos())
         if self.primary:
             color = (60, 140, 90) if not hover else (75, 170, 110)
         else:
@@ -270,7 +288,7 @@ class Cycle(Widget):
         return False
 
     def draw(self, surface):
-        hover = self.rect.collidepoint(pygame.mouse.get_pos())
+        hover = self.rect.collidepoint(mouse_pos())
         pygame.draw.rect(surface, PANEL_HI if hover else PANEL, self.rect, border_radius=6)
         pygame.draw.rect(surface, BORDER, self.rect, 1, border_radius=6)
         label = fit_text(self.options[self.index][1], 18, self.rect.w - 50)

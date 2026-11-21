@@ -6,7 +6,8 @@
       "tiles": [
         1
       ],
-      "desc": "Enchanted knife"
+      "desc": "Enchanted knife",
+      "tier": "gold"
     },
     {
       "name": "Magical punch",
@@ -15,7 +16,8 @@
         1,
         2
       ],
-      "desc": "Ethereal big conjured hand"
+      "desc": "Ethereal big conjured hand",
+      "tier": "silver"
     },
     {
       "name": "Fireball",
@@ -26,7 +28,8 @@
         3,
         4
       ],
-      "desc": "I said \"I CAST FIREBALL\""
+      "desc": "I said \"I CAST FIREBALL\"",
+      "tier": "bronze"
     },
     {
       "name": "Magic bolt",
@@ -38,7 +41,8 @@
         4,
         5
       ],
-      "desc": "A magical ethereal bolt"
+      "desc": "A magical ethereal bolt",
+      "tier": "bronze"
     },
     {
       "name": "Lance",
@@ -46,7 +50,8 @@
       "tiles": [
         2
       ],
-      "desc": "Exactly two tiles away"
+      "desc": "Exactly two tiles away",
+      "tier": "gold"
     },
     {
       "name": "Long spear",
@@ -54,7 +59,8 @@
       "tiles": [
         3
       ],
-      "desc": "Exactly three tiles away"
+      "desc": "Exactly three tiles away",
+      "tier": "silver"
     },
     {
       "name": "Whip",
@@ -63,7 +69,8 @@
         2,
         3
       ],
-      "desc": "Cracks at mid range"
+      "desc": "Cracks at mid range",
+      "tier": "silver"
     },
     {
       "name": "Arc bolt",
@@ -73,7 +80,8 @@
         4,
         5
       ],
-      "desc": "Arcs over close targets"
+      "desc": "Arcs over close targets",
+      "tier": "bronze"
     },
     {
       "name": "Meteor",
@@ -83,7 +91,8 @@
         5,
         6
       ],
-      "desc": "Falls far away"
+      "desc": "Falls far away",
+      "tier": "silver"
     },
     {
       "name": "Sniper hex",
@@ -94,7 +103,8 @@
         8,
         9
       ],
-      "desc": "Only hits far targets"
+      "desc": "Only hits far targets",
+      "tier": "silver"
     },
     {
       "name": "Ricochet",
@@ -104,7 +114,8 @@
         5,
         9
       ],
-      "desc": "Bounces in big steps"
+      "desc": "Bounces in big steps",
+      "tier": "silver"
     },
     {
       "name": "Even storm",
@@ -115,7 +126,8 @@
         6,
         8
       ],
-      "desc": "Only even distances"
+      "desc": "Only even distances",
+      "tier": "silver"
     },
     {
       "name": "Odd storm",
@@ -127,7 +139,8 @@
         7,
         9
       ],
-      "desc": "Only odd distances"
+      "desc": "Only odd distances",
+      "tier": "bronze"
     },
     {
       "name": "Ward breaker",
@@ -137,7 +150,8 @@
         2,
         3
       ],
-      "desc": "Short-range burst"
+      "desc": "Short-range burst",
+      "tier": "bronze"
     },
     {
       "name": "Shockwave",
@@ -153,7 +167,8 @@
         8,
         9
       ],
-      "desc": "Hits everything"
+      "desc": "Hits everything",
+      "tier": "bronze"
     }
   ]
 }

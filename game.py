@@ -1,27 +1,181 @@
-"""In-match screen. Renders the server's state snapshots; never knows the opponent's position."""
+"""In-match screen. Renders the host's state snapshots.
+
+Drawn on a fixed 1920x1080 canvas (the app scales it to the window). Online,
+the client never knows the opponent's position; offline (LocalPeer) both
+wizards can be shown.
+"""
 
 import pygame
 
-from rules import CURE_MODE_NAMES, MAX_DISTANCE
-from ui import (
-    BAD, BG, BORDER, CURE, DIM, GOOD, HEIGHT, MUTED, P1_COLOR, P2_COLOR, PANEL, PANEL_HI, TEXT,
-    WARN, WIDTH, fit_text, font, text, wrap_text,
-)
+import sprites
+from rules import DEFAULT_TIER, MAX_DISTANCE
+from ui import BAD, GOOD, WARN, mouse_pos
+
+GW, GH = 1920, 1080
 
 BOARD_W = 10
-TILE = 88
-BOARD_X = (WIDTH - BOARD_W * TILE) // 2
-BOARD_Y = 190
-HAND_Y = 400
-CARD_H = 122
-EXTRA_Y = 530
+TILE_X0 = 110            # centre of tile 1
+TILE_PITCH = 189
+TERRAIN_W = 164          # portal ring width
+TERRAIN_BOTTOM = 592
+RING_MID = 538           # vertical centre of the ring at TERRAIN_W
+WIZARD_SCALE = 0.55      # same scale for both mages so their pixels match
+WIZARD_FEET = RING_MID + 12
+NUMBER_Y = 440
+
+CARD_W, CARD_H = 416, 286    # card template size; cards are drawn at this size, then scaled
+CARD_MAX_W = 410
+CARD_GAP = 18
+HAND_BOTTOM = 977
+
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+SOFT = (215, 205, 235)
+FAINT = (165, 150, 190)
+CURE_GREEN = (120, 255, 140)
+TARGET_RED = (255, 110, 110)
+
+# ----------------------------------------------------------------------
+# Text with an outline (cached; the board redraws every frame)
+# ----------------------------------------------------------------------
+_fonts = {}
+_texts = {}
 
 
+def gfont(size, bold=True):
+    key = (size, bold)
+    if key not in _fonts:
+        _fonts[key] = pygame.font.SysFont("calibri,segoeui,arial", size, bold=bold)
+    return _fonts[key]
+
+
+def render_text(s, size, color=WHITE, bold=True, outline=0, ocolor=BLACK):
+    key = (str(s), size, color, bold, outline, ocolor)
+    surf = _texts.get(key)
+    if surf is None:
+        f = gfont(size, bold)
+        base = f.render(str(s), True, color)
+        if outline:
+            shape = f.render(str(s), True, ocolor)
+            o = outline
+            surf = pygame.Surface((base.get_width() + 2 * o, base.get_height() + 2 * o), pygame.SRCALPHA)
+            for dx in range(-o, o + 1):
+                for dy in range(-o, o + 1):
+                    if dx * dx + dy * dy <= o * o + 1:
+                        surf.blit(shape, (o + dx, o + dy))
+            surf.blit(base, (o, o))
+        else:
+            surf = base
+        if len(_texts) > 800:
+            _texts.clear()
+        _texts[key] = surf
+    return surf
+
+
+def draw_text(surface, s, pos, size, color=WHITE, bold=True, outline=0, anchor="center", alpha=255):
+    surf = render_text(s, size, color, bold, outline)
+    if alpha < 255:
+        surf = surf.copy()
+        surf.set_alpha(alpha)
+    rect = surf.get_rect(**{anchor: pos})
+    surface.blit(surf, rect)
+    return rect
+
+
+def fit(s, size, max_w, bold=True):
+    s = str(s)
+    f = gfont(size, bold)
+    if f.size(s)[0] <= max_w:
+        return s
+    while s and f.size(s + "...")[0] > max_w:
+        s = s[:-1]
+    return s.rstrip() + "..."
+
+
+# ----------------------------------------------------------------------
+# Cards (layout measured on the 416x286 templates in assets/card_<tier>.png)
+# ----------------------------------------------------------------------
+_cards = {}
+METER_SRC_X0, METER_SRC_STEP, METER_SRC_Y, METER_SIZE = 12, 32, 126, 29   # icon grid in distance_meter.png
+METER_X0, METER_STEP, METER_Y = 14, 32.75, 241                              # where the icons go on the card
+ART_BOX = pygame.Rect(14, 86, 388, 104)                                     # between the name and desc bands
+
+
+def _card_key(card):
+    return (card["name"], card["damage"], tuple(card["tiles"]), card.get("desc", ""),
+            card.get("tier", DEFAULT_TIER), card.get("art", ""))
+
+
+def _fallback_template():
+    surf = pygame.Surface((CARD_W, CARD_H), pygame.SRCALPHA)
+    pygame.draw.rect(surf, (150, 110, 60), surf.get_rect(), border_radius=14)
+    pygame.draw.rect(surf, BLACK, surf.get_rect(), 8, border_radius=14)
+    pygame.draw.rect(surf, BLACK, (0, 28, 338, 55), border_radius=10)
+    pygame.draw.rect(surf, BLACK, (14, 193, 292, 37), border_radius=10)
+    pygame.draw.rect(surf, BLACK, (315, 193, 87, 77), border_radius=12)
+    return surf
+
+
+def render_card(card):
+    """The card at template size (416x286)."""
+    key = _card_key(card)
+    if key in _cards:
+        return _cards[key]
+    template = sprites.card_template(card.get("tier", DEFAULT_TIER)) or sprites.card_template(DEFAULT_TIER)
+    surf = template.copy() if template else _fallback_template()
+
+    art = sprites.card_art(card)
+    if art:
+        scale = min(ART_BOX.w / art.get_width(), ART_BOX.h / art.get_height(), 1.0)
+        if scale < 1.0:
+            art = pygame.transform.smoothscale(
+                art, (round(art.get_width() * scale), round(art.get_height() * scale)))
+        surf.blit(art, art.get_rect(center=ART_BOX.center))
+
+    draw_text(surf, fit(card["name"], 36, 300), (21, 56), 36, anchor="midleft")
+    if card.get("desc"):
+        draw_text(surf, fit(card["desc"], 22, 278), (22, 211), 22, anchor="midleft")
+    dmg = str(card["damage"])
+    draw_text(surf, dmg, (359, 231), 36 if len(dmg) < 3 else 28, outline=2)
+
+    meter = sprites.distance_meter()
+    for d in range(1, MAX_DISTANCE + 1):
+        src = pygame.Rect(METER_SRC_X0 + (d - 1) * METER_SRC_STEP, METER_SRC_Y, METER_SIZE, METER_SIZE)
+        dst = pygame.Rect(round(METER_X0 + (d - 1) * METER_STEP), METER_Y, METER_SIZE, METER_SIZE)
+        hit = d in card["tiles"]
+        if meter:
+            icon = meter.subsurface(src).copy()
+            if not hit:
+                icon.fill((255, 255, 255, 75), special_flags=pygame.BLEND_RGBA_MULT)
+            surf.blit(icon, dst)
+        else:
+            pygame.draw.ellipse(surf, (20, 20, 20) if hit else (90, 90, 90), dst)
+            draw_text(surf, d, dst.center, 18, WHITE if hit else (150, 150, 150))
+    _cards[key] = surf
+    return surf
+
+
+def scaled_card(card, w):
+    key = (_card_key(card), w)
+    if key not in _cards:
+        base = render_card(card)
+        h = round(w * CARD_H / CARD_W)
+        _cards[key] = base if w == CARD_W else pygame.transform.smoothscale(base, (w, h))
+    return _cards[key]
+
+
+# ----------------------------------------------------------------------
+# Screen
+# ----------------------------------------------------------------------
 class GameScreen:
-    def __init__(self, app, ws_url, config=None):
+    size = (GW, GH)
+
+    def __init__(self, app, ws_url, config=None, offline=False):
         self.app = app
         self.ws_url = ws_url
         self.hello_config = config
+        self.offline = offline
+        self.reveal = offline        # offline: show the opponent's wizard too
         self.peer = None
         self.connect_pending = True
         self.drawn_once = False
@@ -29,17 +183,20 @@ class GameScreen:
         self.config = None
         self.state = None
         self.selected = 0
-        self.status = "Connecting..."
+        self.status = "Starting..." if offline else "Connecting..."
         self.status_color = WARN
         self.log = []
-        self.mouse = (0, 0)
 
     # ------------------------------------------------------------------
-    # Network
+    # Transport
     # ------------------------------------------------------------------
     def _connect(self):
-        from net_peer import NetPeer
         self.connect_pending = False
+        if self.offline:
+            from local_peer import LocalPeer
+            self.peer = LocalPeer(self.hello_config)
+            return
+        from net_peer import NetPeer
         try:
             self.peer = NetPeer(self.ws_url)
         except Exception as exc:
@@ -69,7 +226,10 @@ class GameScreen:
             self.app.config_rejected(msg.get("errors", []), self.hello_config)
         elif t == "match_start":
             self.config = msg["config"]
-            self.add_log(f"You are Player {msg['player'] + 1}.")
+            if msg.get("offline"):
+                self.add_log("Offline: both players share this screen.")
+            else:
+                self.add_log(f"You are Player {msg['player'] + 1}.")
         elif t == "state":
             self.state = msg
             hand = msg.get("hand", [])
@@ -87,13 +247,18 @@ class GameScreen:
 
     def _refresh_status(self):
         s = self.state
+        me = s["player"]
         if s["game_over"]:
-            won = s["winner"] == s["player"]
-            self.status, self.status_color = ("YOU WIN!" if won else "YOU LOSE"), (GOOD if won else BAD)
+            if self.offline:
+                self.status, self.status_color = f"PLAYER {s['winner'] + 1} WINS!", GOOD
+            else:
+                won = s["winner"] == me
+                self.status, self.status_color = ("YOU WIN!" if won else "YOU LOSE"), (GOOD if won else BAD)
         elif s.get("offer") and not s["hand"]:
             self.status, self.status_color = "Pick a new card.", GOOD
         elif s["your_turn"]:
-            self.status, self.status_color = "Your turn.", GOOD
+            self.status = f"Player {me + 1}'s turn." if self.offline else "Your turn."
+            self.status_color = GOOD
         else:
             self.status, self.status_color = "Opponent's turn.", WARN
 
@@ -103,10 +268,17 @@ class GameScreen:
             self.log = self.log[-3:]
 
     # ------------------------------------------------------------------
-    # Geometry helpers
+    # Geometry
     # ------------------------------------------------------------------
+    @staticmethod
+    def tile_x(i):
+        return TILE_X0 + i * TILE_PITCH
+
     def tile_rect(self, i):
-        return pygame.Rect(BOARD_X + i * TILE, BOARD_Y, TILE - 2, TILE - 2)
+        """Clickable/highlight area of a tile: from its number down to the bottom of the terrain."""
+        cx = self.tile_x(i)
+        top = NUMBER_Y - 36
+        return pygame.Rect(cx - 88, top, 176, TERRAIN_BOTTOM + 14 - top)
 
     def direction(self):
         return 1 if self.state["player"] == 0 else -1
@@ -115,29 +287,24 @@ class GameScreen:
         """Opponent-region tiles (0-based) hit by a card from my current position."""
         pos = self.state["your_pos"]
         enemy = range(5, BOARD_W) if self.state["player"] == 0 else range(0, 5)
-        out = []
-        for d in card["tiles"]:
-            t = pos + d * self.direction()
-            if t in enemy:
-                out.append(t)
-        return out
+        return [t for t in (pos + d * self.direction() for d in card["tiles"]) if t in enemy]
 
     def hand_layout(self):
         s = self.state
-        n = len(s["hand"]) + (1 if s.get("wait_card") else 0)
-        n = max(n, 1)
-        gap = 10
-        w = min(240, (WIDTH - 60 - gap * (n - 1)) // n)
-        total = n * w + gap * (n - 1)
-        x0 = (WIDTH - total) // 2
-        return [pygame.Rect(x0 + i * (w + gap), HAND_Y, w, CARD_H) for i in range(n)]
+        n = max(1, len(s["hand"]) + (1 if s.get("wait_card") else 0))
+        w = min(CARD_MAX_W, (GW - 120 - CARD_GAP * (n - 1)) // n)
+        h = round(w * CARD_H / CARD_W)
+        total = n * w + CARD_GAP * (n - 1)
+        x0 = (GW - total) // 2
+        return [pygame.Rect(x0 + i * (w + CARD_GAP), HAND_BOTTOM - h, w, h) for i in range(n)]
 
     def offer_layout(self):
         offer = self.state.get("offer") or []
-        w, gap = 210, 10
+        w, gap = 250, 24
+        h = round(w * CARD_H / CARD_W)
         total = len(offer) * w + gap * (len(offer) - 1)
-        x0 = (WIDTH - total) // 2
-        return [pygame.Rect(x0 + i * (w + gap), EXTRA_Y + 22, w, 100) for i in range(len(offer))]
+        x0 = (GW - total) // 2
+        return [pygame.Rect(x0 + i * (w + gap), 176, w, h) for i in range(len(offer))]
 
     # ------------------------------------------------------------------
     # Input
@@ -166,9 +333,13 @@ class GameScreen:
                 self.close()
                 self.app.show_menu()
                 return
+            if self.offline and self.peer and event.key == pygame.K_v:
+                self.reveal = not self.reveal
             if not s or s["game_over"]:
                 return
-            if event.key in (pygame.K_LEFT, pygame.K_a):
+            if self.offline and self.peer and event.key == pygame.K_TAB:
+                self.peer.switch()
+            elif event.key in (pygame.K_LEFT, pygame.K_a):
                 if self.can_act():
                     self.send({"type": "action", "action": "move", "direction": -1})
             elif event.key in (pygame.K_RIGHT, pygame.K_d):
@@ -194,8 +365,7 @@ class GameScreen:
                     self.selected = i
                     return
             if s["hand"]:
-                targets = self.target_tiles(s["hand"][self.selected])
-                for t in targets:
+                for t in self.target_tiles(s["hand"][self.selected]):
                     if self.tile_rect(t).collidepoint(event.pos):
                         self.attack()
                         return
@@ -216,155 +386,169 @@ class GameScreen:
     # ------------------------------------------------------------------
     # Drawing
     # ------------------------------------------------------------------
-    def draw_health(self, surface, x, y, hp, max_hp, label):
-        pygame.draw.rect(surface, (45, 45, 52), (x, y, 360, 28), border_radius=7)
-        pygame.draw.rect(surface, (200, 70, 70), (x, y, max(0, int(360 * hp / max_hp)), 28), border_radius=7)
-        text(surface, f"{label}: {hp} / {max_hp} HP", (x + 10, y + 3), 20)
+    def draw_background(self, surface):
+        bg = sprites.background(self.size)
+        if bg:
+            surface.blit(bg, (0, 0))
+        else:
+            surface.fill((45, 20, 75))
 
-    def draw_card(self, surface, rect, card, selected=False, dim=False, label=None):
-        pygame.draw.rect(surface, PANEL_HI if selected else PANEL, rect, border_radius=10)
-        pygame.draw.rect(surface, (180, 200, 240) if selected else BORDER, rect, 2 if selected else 1,
-                         border_radius=10)
-        x, w = rect.x + 10, rect.w - 20
-        color = DIM if dim else TEXT
-        title = f"{label} {card['name']}" if label else card["name"]
-        text(surface, fit_text(title, 18, w, bold=True), (x, rect.y + 8), 18, color, bold=True)
-        text(surface, f"Damage: {card['damage']}", (x, rect.y + 32), 15, MUTED)
-        # distance strip
-        box = max(8, min(18, (w - 2 * (MAX_DISTANCE - 1)) // MAX_DISTANCE))
-        for d in range(1, MAX_DISTANCE + 1):
-            r = pygame.Rect(x + (d - 1) * (box + 2), rect.y + 54, box, box)
-            on = d in card["tiles"]
-            pygame.draw.rect(surface, (210, 85, 85) if on else (50, 52, 62), r, border_radius=3)
-            if box >= 14:
-                text(surface, d, (r.centerx, r.y + 1), 12, TEXT if on else DIM, center=True)
-        desc = wrap_text(card.get("desc", ""), 14, w)[: max(0, (rect.h - 78) // 17)]
-        for i, line in enumerate(desc):
-            text(surface, fit_text(line, 14, w), (x, rect.y + 78 + i * 17), 14, DIM)
+    def draw_health(self, surface, rect, hp, max_hp, label):
+        pygame.draw.rect(surface, BLACK, rect, border_radius=14)
+        inner = rect.inflate(-12, -12)
+        pygame.draw.rect(surface, (52, 22, 48), inner, border_radius=9)
+        frac = max(0.0, min(1.0, hp / max_hp)) if max_hp else 0
+        fill = inner.copy()
+        fill.w = round(inner.w * frac)
+        color = (22, 245, 0) if frac > 0.5 else (250, 215, 0) if frac > 0.25 else (240, 55, 45)
+        if fill.w > 0:
+            pygame.draw.rect(surface, color, fill, border_radius=9)
+        s = f"{label}: {hp} HP"
+        dark = fill.w > gfont(36, False).size(s)[0] + 40
+        draw_text(surface, s, (inner.x + 18, inner.centery + 1), 36, (12, 12, 12) if dark else WHITE,
+                  bold=False, anchor="midleft")
+
+    def draw_tile(self, surface, i, s, targets, hover_tile, cures):
+        cx = self.tile_x(i)
+        owner = 0 if i < 5 else 1
+        if i in targets:
+            r = self.tile_rect(i)
+            glow = pygame.Surface(r.size, pygame.SRCALPHA)
+            pygame.draw.rect(glow, (230, 40, 60, 115 if i == hover_tile else 60), glow.get_rect(), border_radius=18)
+            pygame.draw.rect(glow, (255, 100, 110, 230), glow.get_rect(), 4, border_radius=18)
+            surface.blit(glow, r.topleft)
+
+        active = next((c for c in cures if c["active"]), None)
+        if active:
+            glow = pygame.Surface((200, 110), pygame.SRCALPHA)
+            for k, a in enumerate((40, 60, 85)):
+                pygame.draw.ellipse(glow, (90, 255, 130, a), glow.get_rect().inflate(-k * 34, -k * 22))
+            surface.blit(glow, (cx - 100, RING_MID - 55))
+
+        img = sprites.terrain(owner, TERRAIN_W)
+        if img:
+            surface.blit(img, (cx - img.get_width() // 2, TERRAIN_BOTTOM - img.get_height()))
+        else:
+            color = (70, 140, 60) if owner == 0 else (120, 125, 120)
+            pygame.draw.ellipse(surface, color, (cx - 76, RING_MID - 45, 152, 90), 14)
+
+        if active:
+            draw_text(surface, f"+{active['value']}", (cx, TERRAIN_BOTTOM + 24), 36, CURE_GREEN, outline=3)
+        elif cures:
+            c = cures[0]
+            note = "used" if c["timer"] is None else f"in {c['timer']}"
+            if s["cure_recharge"] == "all_used" and s["cure_group_timer"] is not None:
+                note = f"in {s['cure_group_timer']}"
+            draw_text(surface, note, (cx, TERRAIN_BOTTOM + 24), 28, (200, 195, 210), outline=2)
+
+        draw_text(surface, i + 1, (cx, NUMBER_Y), 52, TARGET_RED if i in targets else WHITE, outline=3)
+
+    def draw_wizard(self, surface, player_index, pos):
+        cx = self.tile_x(pos)
+        img = sprites.wizard(player_index, WIZARD_SCALE)
+        if img:
+            surface.blit(img, (cx - img.get_width() // 2, WIZARD_FEET - img.get_height()))
+            # redraw the front half of the portal ring so the mage stands inside it
+            ring = sprites.terrain(0 if pos < 5 else 1, TERRAIN_W)
+            if ring:
+                h = ring.get_height()
+                front = ring.subsurface((0, h // 2, ring.get_width(), h - h // 2))
+                surface.blit(front, (cx - ring.get_width() // 2, TERRAIN_BOTTOM - h + h // 2))
+            return
+        cy = WIZARD_FEET - 40
+        pygame.draw.circle(surface, (235, 235, 245), (cx, cy), 36)
+        pygame.draw.circle(surface, (30, 30, 38), (cx, cy), 36, 4)
+        draw_text(surface, player_index + 1, (cx, cy), 44, (30, 30, 38))
+
+    def draw_card(self, surface, rect, card, selected=False, hover=False, dim=False):
+        img = scaled_card(card, rect.w)
+        r = rect.move(0, -26 if selected else -10 if hover else 0)
+        if selected:
+            pygame.draw.rect(surface, WHITE, r.inflate(14, 14), 5, border_radius=16)
+        surface.blit(img, r)
+        if dim:
+            shade = pygame.Surface(r.size, pygame.SRCALPHA)
+            shade.fill((10, 0, 20, 120))
+            surface.blit(shade, r)
+        return r
 
     def draw(self, surface):
-        if self.connect_pending:
-            surface.fill(BG)
-            text(surface, "Connecting to", (WIDTH // 2, 300), 22, MUTED, center=True)
-            text(surface, self.ws_url, (WIDTH // 2, 330), 22, center=True)
-            self.drawn_once = True
-            return
-
-        surface.fill(BG)
-        text(surface, "PROXIMITY WARS", (WIDTH // 2, 16), 42, bold=True, center=True)
+        self.draw_background(surface)
         s = self.state
-        if not s:
-            text(surface, self.status, (WIDTH // 2, 320), 22, self.status_color, center=True)
-            text(surface, "Esc: back to menu", (WIDTH // 2, 360), 16, DIM, center=True)
+        if self.connect_pending or not s:
+            draw_text(surface, "PROXIMITY WARS", (GW // 2, 380), 96, outline=4)
+            if self.connect_pending:
+                line = "Starting offline match..." if self.offline else f"Connecting to {self.ws_url}"
+                draw_text(surface, line, (GW // 2, 500), 34, SOFT, outline=2)
+                self.drawn_once = True
+                return
+            draw_text(surface, self.status, (GW // 2, 500), 36, self.status_color, outline=2)
+            draw_text(surface, "Esc: back to menu", (GW // 2, 560), 26, FAINT, outline=2)
             for i, line in enumerate(self.log):
-                text(surface, line, (WIDTH // 2, 400 + i * 20), 16, MUTED, center=True)
+                draw_text(surface, line, (GW // 2, 620 + i * 34), 26, SOFT, outline=2)
             return
 
         me, max_hp = s["player"], s["max_hp"]
         left, right = ("YOU", "OPPONENT") if me == 0 else ("OPPONENT", "YOU")
         left_hp, right_hp = (s["your_hp"], s["opponent_hp"]) if me == 0 else (s["opponent_hp"], s["your_hp"])
-        self.draw_health(surface, 55, 80, left_hp, max_hp, left)
-        self.draw_health(surface, WIDTH - 415, 80, right_hp, max_hp, right)
-        text(surface, f"Opponent holds {s['opponent_hand_size']} card(s)", (WIDTH // 2, 86), 15, DIM, center=True)
+        self.draw_health(surface, pygame.Rect(18, 25, 668, 60), left_hp, max_hp, left)
+        self.draw_health(surface, pygame.Rect(GW - 18 - 668, 25, 668, 60), right_hp, max_hp, right)
 
-        # board -----------------------------------------------------------
+        # status in the middle of the top bar ----------------------------------
+        draw_text(surface, self.status, (GW // 2, 46), 44, self.status_color, outline=3)
+        offer = s.get("offer") if s["attack_mode"] == "roguelike" else None
+
+        # board -------------------------------------------------------------
         hand = s["hand"]
         targets = set(self.target_tiles(hand[self.selected])) if hand and not s["game_over"] else set()
-        hover_tile = next((t for t in targets if self.tile_rect(t).collidepoint(pygame.mouse.get_pos())), None)
+        mouse = mouse_pos()
+        hover_tile = next((t for t in targets if self.tile_rect(t).collidepoint(mouse)), None)
         cures_by_tile = {}
         for c in s["cures"]:
             if c["active"] or s["cure_respawn"] == "same":
                 cures_by_tile.setdefault(c["tile"], []).append(c)
-
         for i in range(BOARD_W):
-            r = self.tile_rect(i)
-            base = P1_COLOR if i < 5 else P2_COLOR
-            if i in targets:
-                base = (150, 70, 70) if hover_tile is None else (190, 85, 85)
-            pygame.draw.rect(surface, base, r, border_radius=6)
-            for c in cures_by_tile.get(i, []):
-                if c["active"]:
-                    pygame.draw.rect(surface, CURE, r, 4, border_radius=6)
-                    text(surface, f"+{c['value']}", (r.centerx, r.bottom - 26), 18, (135, 245, 160),
-                         bold=True, center=True)
-                    break
-            else:
-                if cures_by_tile.get(i):
-                    c = cures_by_tile[i][0]
-                    pygame.draw.rect(surface, (80, 95, 85), r, 2, border_radius=6)
-                    note = "used" if c["timer"] is None else f"in {c['timer']}"
-                    if s["cure_recharge"] == "all_used" and s["cure_group_timer"] is not None:
-                        note = f"in {s['cure_group_timer']}"
-                    text(surface, note, (r.centerx, r.bottom - 22), 14, DIM, center=True)
-            text(surface, i + 1, (r.x + 6, r.y + 4), 15, MUTED)
+            self.draw_tile(surface, i, s, targets, hover_tile, cures_by_tile.get(i, []))
 
-        text(surface, "YOUR REGION" if me == 0 else "OPPONENT REGION", (BOARD_X, BOARD_Y - 22), 15, (170, 195, 220))
-        text(surface, "OPPONENT REGION" if me == 0 else "YOUR REGION", (BOARD_X + 5 * TILE, BOARD_Y - 22), 15,
-             (220, 175, 200))
+        if self.offline and self.reveal and self.peer:
+            self.draw_wizard(surface, 1 - me, self.peer.opponent_pos())
+        self.draw_wizard(surface, me, s["your_pos"])
 
-        cx = BOARD_X + s["your_pos"] * TILE + TILE // 2
-        cy = BOARD_Y + TILE // 2 - 8
-        pygame.draw.circle(surface, (235, 235, 245), (cx, cy), 22)
-        pygame.draw.circle(surface, (30, 30, 38), (cx, cy), 22, 3)
-        text(surface, me + 1, (cx, cy - 17), 30, (30, 30, 38), bold=True, center=True)
-
-        # cure info line ---------------------------------------------------
-        mode = CURE_MODE_NAMES.get(self.config["cure"]["mode"], "") if self.config else ""
-        info = [f"Cure: {mode}", f"cures left this turn: {max(0, s['cures_left_this_turn'])}",
-                "curing ends your turn" if s["cure_ends_turn"] else "curing is a free action"]
-        waiting = [c for c in s["cures"] if not c["active"]]
-        if s["cure_respawn"] == "random" and waiting:
-            timers = [c["timer"] for c in waiting if c["timer"] is not None]
-            info.append(f"next cure appears in {min(timers)} turn(s)" if timers else "no cure will come back")
-        elif s["cure_recharge"] == "all_used" and s["cure_group_timer"] is not None:
-            info.append(f"cures recharge in {s['cure_group_timer']} turn(s)")
-        elif s["cures"] and not any(c["active"] for c in s["cures"]) and s["cure_group_timer"] is None:
-            if all(c["timer"] is None for c in s["cures"]):
-                info.append("all cures used up")
-        elif not s["cures"]:
-            info.append("you have no cures")
-        text(surface, "  |  ".join(info), (WIDTH // 2, BOARD_Y + TILE + 10), 15, MUTED, center=True)
-
-        # status ----------------------------------------------------------
-        text(surface, self.status, (WIDTH // 2, 318), 24, self.status_color, bold=True, center=True)
-        hint = "A/D or arrows: move    H: cure    1-9 / click: pick card    Space or click a red tile: cast    Esc: menu"
-        text(surface, hint, (WIDTH // 2, 352), 15, DIM, center=True)
-
-        # hand ------------------------------------------------------------
+        # hand ----------------------------------------------------------------
         rects = self.hand_layout()
+        hovered = next((i for i, r in enumerate(rects[: len(hand)]) if r.collidepoint(mouse)), None)
         for i, card in enumerate(hand):
-            self.draw_card(surface, rects[i], card, selected=i == self.selected, label=f"{i + 1}.")
+            self.draw_card(surface, rects[i], card, selected=i == self.selected, hover=i == hovered)
         if not hand:
-            text(surface, "No cards in hand.", (WIDTH // 2, HAND_Y + 50), 18, DIM, center=True)
+            draw_text(surface, "No cards in hand.", (GW // 2, 840), 34, FAINT, outline=2)
         if s.get("wait_card"):
-            r = rects[-1]
-            text(surface, "WAITING CARD (shared)", (r.x, HAND_Y - 18), 13, WARN)
-            self.draw_card(surface, r, s["wait_card"], dim=True)
+            r = self.draw_card(surface, rects[-1], s["wait_card"], dim=True)
+            draw_text(surface, "WAITING CARD (shared)", (r.centerx, r.y - 18), 24, (255, 220, 120), outline=2)
 
-        # roguelike offer -------------------------------------------------
-        if s["attack_mode"] == "roguelike":
-            offer = s.get("offer")
-            if offer:
-                more = s.get("offers_pending", 0)
-                extra = f" ({more} more after this)" if more else ""
-                text(surface, f"Choose a card to add to your hand{extra} - click one:", (WIDTH // 2, EXTRA_Y),
-                     17, GOOD, center=True)
-                for r, card in zip(self.offer_layout(), offer):
-                    self.draw_card(surface, r, card)
-            else:
-                text(surface, f"New card choice after {s['discards_until_pick']} more used card(s).",
-                     (WIDTH // 2, EXTRA_Y), 16, DIM, center=True)
+        # roguelike offer -----------------------------------------------------
+        if offer:
+            boxes = self.offer_layout()
+            panel = boxes[0].unionall(boxes).inflate(60, 96).move(0, -16)
+            shade = pygame.Surface(panel.size, pygame.SRCALPHA)
+            pygame.draw.rect(shade, (14, 6, 28, 245), shade.get_rect(), border_radius=20)
+            pygame.draw.rect(shade, (120, 255, 150, 255), shade.get_rect(), 3, border_radius=20)
+            surface.blit(shade, panel.topleft)
+            more = s.get("offers_pending", 0)
+            extra = f" ({more} more after this)" if more else ""
+            draw_text(surface, f"Choose a card to add to your hand{extra}", (GW // 2, panel.y + 26), 28,
+                      CURE_GREEN, outline=2)
+            for k, (r, card) in enumerate(zip(boxes, offer)):
+                self.draw_card(surface, r, card, hover=r.collidepoint(mouse))
 
-        # log -------------------------------------------------------------
-        log_y = HEIGHT - 6 - 18 * len(self.log)
-        for i, line in enumerate(self.log):
-            color = TEXT if i == len(self.log) - 1 else DIM
-            text(surface, line, (20, log_y + i * 18), 15, color)
+        # controls --------------------------------------------------------------
+        hint = "A/D: move    H: cure    1-9 / click: card    Space / click a red tile: cast    Esc: menu"
+        if self.offline:
+            hint += "    Tab: switch player    V: show/hide opponent"
+        draw_text(surface, hint, (GW // 2, 1052), 22, FAINT, outline=2)
 
         if s["game_over"]:
-            overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+            overlay = pygame.Surface((GW, GH), pygame.SRCALPHA)
             overlay.fill((0, 0, 0, 160))
             surface.blit(overlay, (0, 0))
-            won = s["winner"] == me
-            text(surface, "YOU WIN!" if won else "YOU LOSE", (WIDTH // 2, 270), 56, TEXT, bold=True, center=True)
-            text(surface, "Enter: back to menu    Esc: menu", (WIDTH // 2, 345), 20, MUTED, center=True)
+            draw_text(surface, self.status, (GW // 2, 440), 120, self.status_color, outline=5)
+            draw_text(surface, "Enter or Esc: back to menu", (GW // 2, 560), 34, SOFT, outline=2)

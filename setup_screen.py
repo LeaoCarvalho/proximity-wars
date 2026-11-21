@@ -9,7 +9,7 @@ import pygame
 import rules
 from rules import (
     ATTACK_MODE_DEFAULTS, ATTACK_MODE_NAMES, ATTACK_MODES, CURE_DEFAULTS, CURE_MODE_NAMES,
-    CURE_MODES, ConfigError, MAX_DISTANCE, config_to_json, validate_attacks, validate_config,
+    CARD_TIERS, CURE_MODES, ConfigError, DEFAULT_TIER, MAX_DISTANCE, config_to_json, validate_attacks, validate_config,
 )
 from ui import (
     ACCENT, BAD, BG, BORDER, Button, Cycle, DIM, GOOD, HEIGHT, MUTED, PANEL, PANEL_HI, TEXT,
@@ -102,16 +102,17 @@ class SetupScreen:
         self.btn_classic = Button("Classic 4", self._use_classic)
         self.btn_sample = Button("Sample bank (15)", self._use_sample)
 
-        self.path = TextField("match.json", w=180, placeholder="file.json")
+        self.path = TextField("match.json", w=150, placeholder="file.json")
         self.bottom_buttons = [
             Button("Back", app.show_menu),
             Button("Copy JSON", self.copy_json),
-            Button("Paste JSON > form", lambda: self.paste_json(start=False)),
-            Button("Paste JSON > start", lambda: self.paste_json(start=True)),
+            Button("Paste > form", lambda: self.paste_json(start=False)),
+            Button("Paste > start", lambda: self.paste_json(start=True)),
             self.path,
             Button("Load", self.load_file),
             Button("Save", self.save_file),
             Button("START MATCH", self.start, primary=True),
+            Button("OFFLINE", lambda: self.start(offline=True), primary=True),
         ]
 
         self._load_mode_defaults()
@@ -233,10 +234,13 @@ class SetupScreen:
         self.attacks = copy.deepcopy(rules.SAMPLE_BANK)
         self.msg.info("Loaded the 15-card sample bank.")
 
-    def start(self):
+    def start(self, offline=False):
         cfg = self.config()
         if cfg:
-            self.app.start_match(cfg)
+            if offline:
+                self.app.start_offline(cfg)
+            else:
+                self.app.start_match(cfg)
 
     def copy_json(self):
         cfg = self.config()
@@ -458,7 +462,8 @@ class AttackEditor:
         fx = 470
         self.name = TextField(w=300, max_len=40).place(fx + 130, 90)
         self.damage = TextField(w=100, max_len=4).place(fx + 130, 136)
-        self.desc = TextField(w=470, max_len=80).place(fx + 130, 182)
+        self.tier = Cycle([(t, t.capitalize()) for t in CARD_TIERS], w=150).place(fx + 300, 136)
+        self.desc = TextField(w=300, max_len=80).place(fx + 130, 182)
         self.tiles = TilePicker(range(1, MAX_DISTANCE + 1), box=48).place(fx + 130, 250)
         quick = [("All", lambda d: True), ("None", lambda d: False),
                  ("Even", lambda d: d % 2 == 0), ("Odd", lambda d: d % 2 == 1),
@@ -498,8 +503,9 @@ class AttackEditor:
     @staticmethod
     def _item(a):
         if a is None:
-            return {"name": "New attack", "damage": "5", "tiles": {1}, "desc": ""}
-        return {"name": a["name"], "damage": str(a["damage"]), "tiles": set(a["tiles"]), "desc": a.get("desc", "")}
+            return {"name": "New attack", "damage": "5", "tiles": {1}, "desc": "", "tier": DEFAULT_TIER, "art": ""}
+        return {"name": a["name"], "damage": str(a["damage"]), "tiles": set(a["tiles"]), "desc": a.get("desc", ""),
+                "tier": a.get("tier", DEFAULT_TIER), "art": a.get("art", "")}
 
     def _select(self, i):
         self._store()
@@ -508,6 +514,7 @@ class AttackEditor:
         self.name.value = item["name"]
         self.damage.value = item["damage"]
         self.desc.value = item["desc"]
+        self.tier.set(item["tier"])
         self.tiles.selected = item["tiles"]  # shared set: edits apply directly
         if self.selected < self.scroll:
             self.scroll = self.selected
@@ -521,6 +528,7 @@ class AttackEditor:
         item["name"] = self.name.value
         item["damage"] = self.damage.value
         item["desc"] = self.desc.value
+        item["tier"] = self.tier.value
         item["tiles"] = self.tiles.selected
 
     def _quick(self, pred):
@@ -529,8 +537,14 @@ class AttackEditor:
 
     def attacks_raw(self):
         self._store()
-        return [{"name": it["name"], "damage": _num(it["damage"]), "tiles": sorted(it["tiles"]),
-                 "desc": it["desc"]} for it in self.items]
+        out = []
+        for it in self.items:
+            a = {"name": it["name"], "damage": _num(it["damage"]), "tiles": sorted(it["tiles"]),
+                 "desc": it["desc"], "tier": it["tier"]}
+            if it["art"]:
+                a["art"] = it["art"]
+            out.append(a)
+        return out
 
     def attacks(self):
         try:
@@ -644,7 +658,8 @@ class AttackEditor:
             max_scroll = max(0, len(self.items) - self.LIST_ROWS)
             self.scroll = min(max_scroll, max(0, self.scroll - event.y))
             return
-        for w in [self.name, self.damage, self.desc, self.tiles, *self.quick, *self.list_buttons, *self.bottom]:
+        for w in [self.name, self.damage, self.tier, self.desc, self.tiles, *self.quick, *self.list_buttons,
+                  *self.bottom]:
             if w.handle(event):
                 self._store()
                 return
@@ -653,6 +668,15 @@ class AttackEditor:
 
     def update(self):
         pass
+
+    def _draw_card_preview(self, surface, rect):
+        """The selected attack as it looks in a match (only when it is valid)."""
+        try:
+            card = validate_attacks(self.attacks_raw()[self.selected: self.selected + 1])[0]
+        except (ConfigError, IndexError):
+            return
+        from game import scaled_card
+        surface.blit(scaled_card(card, rect.w), rect)
 
     def draw(self, surface):
         self._store()
@@ -682,11 +706,13 @@ class AttackEditor:
         fx = 470
         text(surface, "Name", (fx, 97), 18)
         text(surface, "Damage", (fx, 143), 18)
+        text(surface, "Tier", (fx + 250, 143), 18)
         text(surface, "Description", (fx, 189), 18)
         text(surface, "Hit distances", (fx, 236), 18)
         text(surface, "tiles away from the caster", (fx, 258), 14, DIM)
-        for w in [self.name, self.damage, self.desc, self.tiles, *self.quick]:
+        for w in [self.name, self.damage, self.tier, self.desc, self.tiles, *self.quick]:
             w.draw(surface)
+        self._draw_card_preview(surface, pygame.Rect(fx + 452, 86, 160, 110))
 
         # Preview: Player 1 on tile 3 casting toward the right.
         text(surface, "Preview (Player 1 on tile 3 casting at Player 2's side):", (fx, 360), 16, MUTED)
