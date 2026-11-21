@@ -256,6 +256,55 @@ class TextField(Widget):
         surface.set_clip(clip)
 
 
+NEWLINE, CARRIAGE_RETURN = chr(10), chr(13)
+
+
+class TextArea(TextField):
+    """Multi-line text box: Enter adds a new line, Esc / Tab leave it."""
+
+    def __init__(self, value="", w=600, h=220, placeholder="", max_len=2000, size=18):
+        super().__init__(value, w, h, placeholder, max_len, size)
+
+    def handle(self, event):
+        if TextField.focused is self and event.type == pygame.KEYDOWN:
+            if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                self.value = (self.value + NEWLINE)[: self.max_len]
+                return True
+            if event.key == pygame.K_v and event.mod & pygame.KMOD_CTRL:
+                self.value = (self.value + paste_from_clipboard().replace(CARRIAGE_RETURN, ""))[: self.max_len]
+                return True
+        return super().handle(event)
+
+    def lines(self, width):
+        out = []
+        for para in self.value.split(NEWLINE):
+            wrapped = wrap_text(para, self.size, width) if para.strip() else [""]
+            out.extend(wrapped)
+        return out
+
+    def draw(self, surface):
+        focused = TextField.focused is self
+        pygame.draw.rect(surface, (24, 26, 34), self.rect, border_radius=6)
+        border = BAD if self.invalid else (ACCENT if focused else BORDER)
+        pygame.draw.rect(surface, border, self.rect, 2 if focused else 1, border_radius=6)
+        inner = self.rect.inflate(-16, -12)
+        line_h = font(self.size).get_linesize()
+        if not self.value:
+            text(surface, self.placeholder, inner.topleft, self.size, DIM)
+            lines = [""]
+        else:
+            lines = self.lines(inner.w)
+            visible = max(1, inner.h // line_h)
+            lines = lines[-visible:]          # keep the end (where you type) in view
+            for i, line in enumerate(lines):
+                text(surface, line, (inner.x, inner.y + i * line_h), self.size)
+        if focused and pygame.time.get_ticks() // 500 % 2 == 0:
+            last = lines[-1] if self.value else ""
+            cx = inner.x + font(self.size).size(last)[0] + 1
+            cy = inner.y + (len(lines) - 1) * line_h
+            pygame.draw.line(surface, TEXT, (cx, cy + 2), (cx, cy + line_h - 2), 2)
+
+
 class Cycle(Widget):
     """Click to go to the next option, right-click for the previous one."""
 

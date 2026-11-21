@@ -98,6 +98,11 @@ class SetupScreen:
         self.discards_per_pick = TextField(w=100)
         self.choices = TextField(w=100)
         self.attacks = []
+        self.opponent = Cycle([("pvp", "Another player"), ("bot", "The bot (random moves)"),
+                               ("bot_vs_bot", "Bot vs bot (watch)")], w=330)
+        self.where = Cycle([("online", "Online server"), ("offline", "This computer (no server)")], w=330)
+        self.visibility = Cycle([("private", "Private (code only)"), ("public", "Public (anyone can join)")],
+                                w=330)
         self.btn_edit = Button("Edit attacks...", lambda: app.set_screen(AttackEditor(app, self)))
         self.btn_classic = Button("Classic 4", self._use_classic)
         self.btn_sample = Button("Sample bank (15)", self._use_sample)
@@ -112,7 +117,6 @@ class SetupScreen:
             Button("Load", self.load_file),
             Button("Save", self.save_file),
             Button("START MATCH", self.start, primary=True),
-            Button("OFFLINE", lambda: self.start(offline=True), primary=True),
         ]
 
         self._load_mode_defaults()
@@ -234,13 +238,15 @@ class SetupScreen:
         self.attacks = copy.deepcopy(rules.SAMPLE_BANK)
         self.msg.info("Loaded the 15-card sample bank.")
 
-    def start(self, offline=False):
+    def start(self):
         cfg = self.config()
-        if cfg:
-            if offline:
-                self.app.start_offline(cfg)
-            else:
-                self.app.start_match(cfg)
+        if not cfg:
+            return
+        mode, offline = self.opponent.value, self.where.value == "offline"
+        if mode == "pvp" and not offline:
+            self.app.start_match(cfg, private=self.visibility.value == "private")
+        else:
+            self.app.launch(mode, offline=offline, cfg=cfg)
 
     def copy_json(self):
         cfg = self.config()
@@ -256,7 +262,7 @@ class SetupScreen:
             return
         self.load(cfg)
         if start:
-            self.app.start_match(cfg)
+            self.start()  # uses the Opponent / Play on / Visibility choices
         else:
             self.msg.info(f"Loaded settings from {source}.")
 
@@ -299,6 +305,17 @@ class SetupScreen:
         row = lambda label, widgets, hint="": R.append(("row", label, widgets, hint))  # noqa: E731
         note = lambda s, color=MUTED: R.append(("note", s, color))  # noqa: E731
 
+        H("Match")
+        row("Opponent", [self.opponent], "click / right-click to change")
+        row("Play on", [self.where])
+        if self.opponent.value == "pvp" and self.where.value == "online":
+            row("Visibility", [self.visibility])
+            if self.visibility.value == "private":
+                note("Only players who type your match code can join.")
+            else:
+                note("Your code works, and anyone who clicks Join match with an empty code box may also join.")
+        elif self.opponent.value == "pvp":
+            note("Both players share this screen (hot seat).")
         H("General")
         row("Max HP (starting health)", [self.max_hp])
         row("Start tile", [self.start_p1, self.start_p2], "Player 1 / Player 2")

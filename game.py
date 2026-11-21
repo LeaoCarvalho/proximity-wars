@@ -167,15 +167,31 @@ def scaled_card(card, w):
 # ----------------------------------------------------------------------
 # Screen
 # ----------------------------------------------------------------------
+PLAYERS = {                      # game mode -> who sits in seats 1 and 2
+    "pvp": ("human", "human"),
+    "bot": ("human", "bot"),
+    "bot_vs_bot": ("bot", "bot"),
+}
+FEEDBACK_BUTTON = pygame.Rect(GW // 2 - 190, 620, 380, 70)
+
+
 class GameScreen:
     size = (GW, GH)
 
-    def __init__(self, app, ws_url, config=None, offline=False):
+    def __init__(self, app, ws_url, config=None, offline=False, mode="pvp", room=None, private=False):
         self.app = app
         self.ws_url = ws_url
         self.hello_config = config
         self.offline = offline
-        self.reveal = offline        # offline: show the opponent's wizard too
+        self.mode = mode
+        self.room = room
+        self.private = private
+        self.players = PLAYERS[mode]
+        self.spectator = mode == "bot_vs_bot"
+        self.hot_seat = offline and mode == "pvp"
+        self.reveal = self.hot_seat   # hot seat: show the other wizard too (V toggles offline)
+        self.fast = False
+        self.match_id = None
         self.peer = None
         self.connect_pending = True
         self.drawn_once = False
@@ -194,7 +210,7 @@ class GameScreen:
         self.connect_pending = False
         if self.offline:
             from local_peer import LocalPeer
-            self.peer = LocalPeer(self.hello_config)
+            self.peer = LocalPeer(self.hello_config, players=self.players)
             return
         from net_peer import NetPeer
         try:
@@ -202,8 +218,12 @@ class GameScreen:
         except Exception as exc:
             self.status, self.status_color = f"Connection failed: {exc}", BAD
             return
-        self.peer.send({"type": "hello", "config": self.hello_config})
-        self.status, self.status_color = "Connected. Waiting for the other player...", WARN
+        self.peer.send({"type": "hello", "mode": self.mode, "config": self.hello_config, "room": self.room,
+                        "private": self.private})
+        if self.mode == "pvp":
+            self.status, self.status_color = "Connected. Waiting for the other player...", WARN
+        else:
+            self.status, self.status_color = "Connected. Starting...", WARN
 
     def send(self, message):
         if self.peer and self.peer.running:
@@ -226,10 +246,9 @@ class GameScreen:
             self.app.config_rejected(msg.get("errors", []), self.hello_config)
         elif t == "match_start":
             self.config = msg["config"]
-            if msg.get("offline"):
-                self.add_log("Offline: both players share this screen.")
-            else:
-                self.add_log(f"You are Player {msg['player'] + 1}.")
+            self.match_id = msg.get("match_id")
+            self.spectator = bool(msg.get("spectator"))
+            self.players = tuple(msg.get("players") or self.players)
         elif t == "state":
             self.state = msg
             hand = msg.get("hand", [])
@@ -245,22 +264,33 @@ class GameScreen:
             if self.peer:
                 self.peer.running = False
 
+    def opponent_is_bot(self):
+        me = self.state["player"] if self.state else 0
+        return self.players[1 - me] == "bot"
+
     def _refresh_status(self):
         s = self.state
         me = s["player"]
         if s["game_over"]:
-            if self.offline:
+            if self.spectator:
+                self.status, self.status_color = f"BOT {s['winner'] + 1} WINS!", GOOD
+            elif self.hot_seat:
                 self.status, self.status_color = f"PLAYER {s['winner'] + 1} WINS!", GOOD
+            elif s["winner"] == me:
+                self.status, self.status_color = "YOU WIN!", GOOD
             else:
-                won = s["winner"] == me
-                self.status, self.status_color = ("YOU WIN!" if won else "YOU LOSE"), (GOOD if won else BAD)
+                self.status = "THE BOT WINS" if self.opponent_is_bot() else "YOU LOSE"
+                self.status_color = BAD
+        elif self.spectator:
+            self.status, self.status_color = f"Bot {s['turn'] + 1}'s turn.", WARN
         elif s.get("offer") and not s["hand"]:
             self.status, self.status_color = "Pick a new card.", GOOD
         elif s["your_turn"]:
-            self.status = f"Player {me + 1}'s turn." if self.offline else "Your turn."
+            self.status = f"Player {me + 1}'s turn." if self.hot_seat else "Your turn."
             self.status_color = GOOD
         else:
-            self.status, self.status_color = "Opponent's turn.", WARN
+            self.status = "Bot's turn." if self.opponent_is_bot() else "Opponent's turn."
+            self.status_color = WARN
 
     def add_log(self, line):
         if line:
@@ -311,7 +341,7 @@ class GameScreen:
     # ------------------------------------------------------------------
     def can_act(self):
         s = self.state
-        if not s or s["game_over"]:
+        if not s or s["game_over"] or self.spectator:
             return False
         if not s["your_turn"]:
             self.status, self.status_color = "It is not your turn.", BAD
@@ -326,18 +356,32 @@ class GameScreen:
             return
         self.send({"type": "action", "action": "attack", "card": self.selected})
 
+    def open_feedback(self):
+        match_id = self.match_id
+        self.close()
+        self.app.show_feedback(match_id=match_id)
+
     def handle(self, event):
         s = self.state
+        over = bool(s and s["game_over"])
         if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_ESCAPE or (s and s["game_over"] and event.key == pygame.K_RETURN):
+            if event.key == pygame.K_ESCAPE or (over and event.key == pygame.K_RETURN):
                 self.close()
                 self.app.show_menu()
                 return
-            if self.offline and self.peer and event.key == pygame.K_v:
-                self.reveal = not self.reveal
-            if not s or s["game_over"]:
+            if over and event.key == pygame.K_f:
+                self.open_feedback()
                 return
-            if self.offline and self.peer and event.key == pygame.K_TAB:
+            if self.offline and not self.spectator and self.peer and event.key == pygame.K_v:
+                self.reveal = not self.reveal
+            if not s or over:
+                return
+            if self.spectator:
+                if event.key == pygame.K_s:
+                    self.fast = not self.fast
+                    self.send({"type": "speed", "fast": self.fast})
+                return
+            if self.hot_seat and self.peer and event.key == pygame.K_TAB:
                 self.peer.switch()
             elif event.key in (pygame.K_LEFT, pygame.K_a):
                 if self.can_act():
@@ -355,7 +399,11 @@ class GameScreen:
                 if i < len(s["hand"]):
                     self.selected = i
 
-        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and s and not s["game_over"]:
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and over:
+            if FEEDBACK_BUTTON.collidepoint(event.pos):
+                self.open_feedback()
+
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and s and not self.spectator:
             for i, r in enumerate(self.offer_layout()):
                 if r.collidepoint(event.pos):
                     self.send({"type": "action", "action": "pick", "index": i})
@@ -489,7 +537,11 @@ class GameScreen:
             return
 
         me, max_hp = s["player"], s["max_hp"]
-        left, right = ("YOU", "OPPONENT") if me == 0 else ("OPPONENT", "YOU")
+        if self.spectator:
+            left, right = "BOT 1", "BOT 2"
+        else:
+            them = "BOT" if self.opponent_is_bot() else "OPPONENT"
+            left, right = ("YOU", them) if me == 0 else (them, "YOU")
         left_hp, right_hp = (s["your_hp"], s["opponent_hp"]) if me == 0 else (s["opponent_hp"], s["your_hp"])
         self.draw_health(surface, pygame.Rect(18, 25, 668, 60), left_hp, max_hp, left)
         self.draw_health(surface, pygame.Rect(GW - 18 - 668, 25, 668, 60), right_hp, max_hp, right)
@@ -500,7 +552,8 @@ class GameScreen:
 
         # board -------------------------------------------------------------
         hand = s["hand"]
-        targets = set(self.target_tiles(hand[self.selected])) if hand and not s["game_over"] else set()
+        show_targets = hand and not s["game_over"] and not self.spectator
+        targets = set(self.target_tiles(hand[self.selected])) if show_targets else set()
         mouse = mouse_pos()
         hover_tile = next((t for t in targets if self.tile_rect(t).collidepoint(mouse)), None)
         cures_by_tile = {}
@@ -510,15 +563,22 @@ class GameScreen:
         for i in range(BOARD_W):
             self.draw_tile(surface, i, s, targets, hover_tile, cures_by_tile.get(i, []))
 
-        if self.offline and self.reveal and self.peer:
-            self.draw_wizard(surface, 1 - me, self.peer.opponent_pos())
-        self.draw_wizard(surface, me, s["your_pos"])
+        if self.spectator and s.get("positions"):
+            for i, pos in enumerate(s["positions"]):
+                self.draw_wizard(surface, i, pos)
+        else:
+            if self.offline and self.reveal and self.peer:
+                self.draw_wizard(surface, 1 - me, self.peer.opponent_pos())
+            self.draw_wizard(surface, me, s["your_pos"])
 
         # hand ----------------------------------------------------------------
         rects = self.hand_layout()
         hovered = next((i for i, r in enumerate(rects[: len(hand)]) if r.collidepoint(mouse)), None)
         for i, card in enumerate(hand):
-            self.draw_card(surface, rects[i], card, selected=i == self.selected, hover=i == hovered)
+            if self.spectator:
+                self.draw_card(surface, rects[i], card)
+            else:
+                self.draw_card(surface, rects[i], card, selected=i == self.selected, hover=i == hovered)
         if not hand:
             draw_text(surface, "No cards in hand.", (GW // 2, 840), 34, FAINT, outline=2)
         if s.get("wait_card"):
@@ -526,7 +586,7 @@ class GameScreen:
             draw_text(surface, "WAITING CARD (shared)", (r.centerx, r.y - 18), 24, (255, 220, 120), outline=2)
 
         # roguelike offer -----------------------------------------------------
-        if offer:
+        if offer and not self.spectator:
             boxes = self.offer_layout()
             panel = boxes[0].unionall(boxes).inflate(60, 96).move(0, -16)
             shade = pygame.Surface(panel.size, pygame.SRCALPHA)
@@ -541,9 +601,15 @@ class GameScreen:
                 self.draw_card(surface, r, card, hover=r.collidepoint(mouse))
 
         # controls --------------------------------------------------------------
-        hint = "A/D: move    H: cure    1-9 / click: card    Space / click a red tile: cast    Esc: menu"
-        if self.offline:
-            hint += "    Tab: switch player    V: show/hide opponent"
+        if self.spectator:
+            speed = "fast" if self.fast else "normal"
+            hint = f"S: bot speed ({speed})    Esc: menu"
+        else:
+            hint = "A/D: move    H: cure    1-9 / click: card    Space / click a red tile: cast    Esc: menu"
+            if self.hot_seat:
+                hint += "    Tab: switch player"
+            if self.offline:
+                hint += "    V: show/hide opponent"
         draw_text(surface, hint, (GW // 2, 1052), 22, FAINT, outline=2)
 
         if s["game_over"]:
@@ -552,3 +618,7 @@ class GameScreen:
             surface.blit(overlay, (0, 0))
             draw_text(surface, self.status, (GW // 2, 440), 120, self.status_color, outline=5)
             draw_text(surface, "Enter or Esc: back to menu", (GW // 2, 560), 34, SOFT, outline=2)
+            hover = FEEDBACK_BUTTON.collidepoint(mouse)
+            pygame.draw.rect(surface, (70, 40, 110) if hover else (45, 24, 75), FEEDBACK_BUTTON, border_radius=16)
+            pygame.draw.rect(surface, WHITE, FEEDBACK_BUTTON, 3, border_radius=16)
+            draw_text(surface, "Send feedback (F)", FEEDBACK_BUTTON.center, 34)
