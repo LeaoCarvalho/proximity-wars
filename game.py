@@ -547,7 +547,10 @@ class GameScreen:
         self.draw_health(surface, pygame.Rect(GW - 18 - 668, 25, 668, 60), right_hp, max_hp, right)
 
         # status in the middle of the top bar ----------------------------------
-        draw_text(surface, self.status, (GW // 2, 46), 44, self.status_color, outline=3)
+        size = 44
+        while size > 26 and gfont(size).size(self.status)[0] > 470:  # fit between the HP bars
+            size -= 2
+        draw_text(surface, self.status, (GW // 2, 46), size, self.status_color, outline=3)
         offer = s.get("offer") if s["attack_mode"] == "roguelike" else None
 
         # board -------------------------------------------------------------
