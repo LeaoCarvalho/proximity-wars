@@ -115,10 +115,44 @@ class Database:
     def run(self, statements):
         """Run [(sql, args), ...] in one request. Returns one list of row dicts per statement.
         Raises DatabaseError if the request or any statement fails."""
-        requests = [{"type": "execute", "stmt": {"sql": sql, "args": [_arg(a) for a in args]}}
-                    for sql, args in statements]
-        requests.append({"type": "close"})
-        body = json.dumps({"requests": requests}).encode("utf-8")
+        requests = [{"type": "execute", "stmt": _stmt(sql, args)} for sql, args in statements]
+        out = []
+        for res in self._post(requests)[:len(statements)]:
+            if res.get("type") != "ok":
+                raise DatabaseError(_error(res))
+            out.append(_rows(res["response"]["result"]))
+        if len(out) < len(statements):
+            raise DatabaseError("Incomplete answer from the database.")
+        return out
+
+    def execute(self, sql, args=()):
+        return self.run([(sql, list(args))])[0]
+
+    def transaction(self, statements):
+        """Run [(sql, args), ...] all-or-nothing: if one fails, none of them is kept.
+        Uses a Hrana batch: each step only runs if the previous one succeeded, and a
+        failed COMMIT (or step) ends in ROLLBACK."""
+        steps = [{"stmt": _stmt("BEGIN", [])}]
+        for sql, args in statements:
+            steps.append({"stmt": _stmt(sql, args), "condition": {"type": "ok", "step": len(steps) - 1}})
+        commit = len(steps)
+        steps.append({"stmt": _stmt("COMMIT", []), "condition": {"type": "ok", "step": commit - 1}})
+        steps.append({"stmt": _stmt("ROLLBACK", []),
+                      "condition": {"type": "not", "cond": {"type": "ok", "step": commit}}})
+        answer = self._post([{"type": "batch", "batch": {"steps": steps}}])
+        res = answer[0] if answer else {}
+        if res.get("type") != "ok":
+            raise DatabaseError(_error(res))
+        result = res["response"]["result"]
+        errors = [e for e in result.get("step_errors", []) if e]
+        if errors:
+            raise DatabaseError(errors[0].get("message", "unknown error"))
+        done = result.get("step_results", [])
+        if len(done) <= commit or done[commit] is None:
+            raise DatabaseError("The transaction was not committed.")
+
+    def _post(self, requests):
+        body = json.dumps({"requests": requests + [{"type": "close"}]}).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         if self.token:
             headers["Authorization"] = "Bearer " + self.token
@@ -132,17 +166,43 @@ class Database:
             raise DatabaseError(f"HTTP {exc.code}{hint}: {detail}") from None
         except (urllib.error.URLError, OSError, ValueError) as exc:
             raise DatabaseError(f"Cannot reach {self.url}: {exc}") from None
+        return answer.get("results", [])
 
-        out = []
-        for res in answer.get("results", [])[:len(statements)]:
-            if res.get("type") != "ok":
-                raise DatabaseError((res.get("error") or {}).get("message", "unknown error"))
-            result = res["response"]["result"]
-            names = [c.get("name") for c in result.get("cols", [])]
-            out.append([{n: _value(c) for n, c in zip(names, row)} for row in result.get("rows", [])])
-        if len(out) < len(statements):
-            raise DatabaseError("Incomplete answer from the database.")
-        return out
 
-    def execute(self, sql, args=()):
-        return self.run([(sql, list(args))])[0]
+def _stmt(sql, args):
+    return {"sql": sql, "args": [_arg(a) for a in args]}
+
+
+def _error(res):
+    return (res.get("error") or {}).get("message", "unknown error")
+
+
+def _rows(result):
+    names = [c.get("name") for c in result.get("cols", [])]
+    return [{n: _value(c) for n, c in zip(names, row)} for row in result.get("rows", [])]
+
+
+def split_sql(script):
+    """Statements of a .sql file (no semicolons inside strings or comments, as in schema.sql)."""
+    lines = [line.split("--", 1)[0] for line in script.splitlines()]
+    return [s.strip() for s in "\n".join(lines).split(";") if s.strip()]
+
+
+if __name__ == "__main__":
+    import sys
+    if sys.argv[1:2] != ["create"]:
+        print("Usage: python db.py create [schema.sql]   creates the tables in the database from .env")
+        sys.exit(1)
+    database = Database.from_env()
+    if database is None:
+        print("Set TURSO_DATABASE_URL (and TURSO_AUTH_TOKEN) in .env first.")
+        sys.exit(1)
+    path = sys.argv[2] if len(sys.argv) > 2 else os.path.join(HERE, "schema.sql")
+    with open(path, encoding="utf-8") as f:
+        statements = split_sql(f.read())
+    try:
+        database.run([(s, []) for s in statements])
+    except DatabaseError as exc:
+        print("Failed:", exc)
+        sys.exit(1)
+    print(f"Ran {len(statements)} statement(s) from {os.path.basename(path)} on {database.url}.")

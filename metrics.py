@@ -1,10 +1,11 @@
 """Match metrics and player feedback.
 
-Every match is saved as one JSON line in <dir>/matches.jsonl when it ends.
-Feedback goes to the FeedbackLog table of the Turso database when
-TURSO_DATABASE_URL is set (in .env, see db.py), otherwise (or if the database
-can't be reached) as one line in <dir>/feedback.jsonl. `summary()` turns all
-of it into the numbers we track.
+When TURSO_DATABASE_URL is set (in .env, see db.py), every match goes to the
+MatchLog table when it ends (its action log to MatchAction) and feedback to
+FeedbackLog; schema.sql has the tables. Without a database, or if it can't be
+reached, they are saved as JSON lines in <dir>/matches.jsonl and
+<dir>/feedback.jsonl instead. `summary()` turns all of it into the numbers we
+track.
 
 Run `python metrics.py [dir]` to print the summary of a metrics folder.
 """
@@ -24,6 +25,116 @@ FEEDBACK_MAX = 2000
 FEEDBACK_TABLE = "FeedbackLog"
 FEEDBACK_COLUMNS = ("id", "at", "text", "rating", "match_id", "source")
 FROM_ENV = object()
+ACTION_KINDS = ("move", "heal", "attack", "pick", "rejected", "total")
+ACTION_COLUMNS = ("match_id", "seq", "t", "player", "actor", "action", "direction", "card", "pick_index",
+                  "card_name", "p1_hp", "p2_hp", "events", "error")
+ACTIONS_PER_INSERT = 50
+
+
+# ----------------------------------------------------------------------
+# Match record <-> database rows (players are 0/1 in records, 1/2 in the database)
+# ----------------------------------------------------------------------
+def _json(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def match_row(record):
+    """The MatchLog row (dict) of a match record."""
+    rules = record.get("rules") or {}
+    winner = record.get("winner")
+    row = {
+        "id": record["id"],
+        "room": record.get("room"),
+        "mode": record["mode"],
+        "p1_kind": record["players"][0],
+        "p2_kind": record["players"][1],
+        "started_at": record.get("started_at"),
+        "ended_at": record.get("ended_at"),
+        "duration_s": record.get("duration_s"),
+        "result": record["result"],
+        "winner": winner + 1 if winner is not None else None,
+        "winner_kind": record.get("winner_kind"),
+        "p1_disconnected": int(0 in record.get("disconnected", ())),
+        "p2_disconnected": int(1 in record.get("disconnected", ())),
+        "max_hp": rules.get("max_hp"),
+        "cure_mode": rules.get("cure_mode"),
+        "cure_ends_turn": None if rules.get("cure_ends_turn") is None else int(bool(rules["cure_ends_turn"])),
+        "cures_per_turn": rules.get("cures_per_turn"),
+        "attack_mode": rules.get("attack_mode"),
+        "attacks": _json(rules.get("attacks", [])),
+    }
+    for i, counts in enumerate(record["actions"]):
+        for kind in ACTION_KINDS:
+            column = "cures" if kind == "heal" else "picks" if kind == "pick" else \
+                "moves" if kind == "move" else "attacks" if kind == "attack" else kind
+            row[f"p{i + 1}_{column}"] = counts.get(kind, 0)
+    return row
+
+
+def action_rows(record):
+    """The MatchAction rows (tuples in ACTION_COLUMNS order) of a match record."""
+    rows = []
+    for seq, e in enumerate(record.get("log", []), 1):
+        hp = e.get("hp") or [None, None]
+        rows.append((record["id"], seq, e.get("t"), e["player"] + 1, e.get("by"), e.get("action"),
+                     e.get("direction"), e.get("card"), e.get("index"), e.get("card_name"), hp[0], hp[1],
+                     _json(e["events"]) if "events" in e else None, e.get("error")))
+    return rows
+
+
+def record_from_rows(row, actions=None):
+    """Rebuild the match record (same shape as MatchRecorder.finish) from database rows.
+    actions: the match's MatchAction rows, or None to leave the log out."""
+    counts = []
+    for p in ("p1", "p2"):
+        c = {"move": row[f"{p}_moves"], "heal": row[f"{p}_cures"], "attack": row[f"{p}_attacks"],
+             "pick": row[f"{p}_picks"], "rejected": row[f"{p}_rejected"], "total": row[f"{p}_total"]}
+        counts.append(c)
+    try:
+        attacks = json.loads(row["attacks"]) if row.get("attacks") else []
+    except ValueError:
+        attacks = []
+    record = {
+        "id": row["id"],
+        "room": row["room"],
+        "mode": row["mode"],
+        "players": [row["p1_kind"], row["p2_kind"]],
+        "rules": {
+            "max_hp": row["max_hp"],
+            "cure_mode": row["cure_mode"],
+            "cure_ends_turn": None if row["cure_ends_turn"] is None else bool(row["cure_ends_turn"]),
+            "cures_per_turn": row["cures_per_turn"],
+            "attack_mode": row["attack_mode"],
+            "attacks": attacks,
+        },
+        "started_at": row["started_at"],
+        "ended_at": row["ended_at"],
+        "duration_s": row["duration_s"],
+        "result": row["result"],
+        "winner": row["winner"] - 1 if row["winner"] is not None else None,
+        "winner_kind": row["winner_kind"],
+        "disconnected": [i for i, p in enumerate(("p1", "p2")) if row[f"{p}_disconnected"]],
+        "actions": counts,
+        "cures_used": [c["heal"] for c in counts],
+    }
+    if actions is not None:
+        log = []
+        for a in actions:
+            e = {"t": a["t"], "player": a["player"] - 1, "by": a["actor"], "action": a["action"]}
+            for key, column in (("direction", "direction"), ("card", "card"), ("index", "pick_index"),
+                                ("card_name", "card_name"), ("error", "error")):
+                if a[column] is not None:
+                    e[key] = a[column]
+            if a["events"] is not None:
+                try:
+                    e["events"] = json.loads(a["events"])
+                except ValueError:
+                    e["events"] = []
+            if a["p1_hp"] is not None or a["p2_hp"] is not None:
+                e["hp"] = [a["p1_hp"], a["p2_hp"]]
+            log.append(e)
+        record["log"] = log
+    return record
 
 
 def now_iso(t=None):
@@ -118,6 +229,7 @@ class MetricsStore:
         self.dir = directory or DEFAULT_DIR
         self.db = Database.from_env() if db is FROM_ENV else db
         self.lock = threading.Lock()
+        self._saving = []   # background threads writing matches to the database
 
     def _path(self, name):
         return os.path.join(self.dir, name)
@@ -144,10 +256,43 @@ class MetricsStore:
         return out
 
     def save_match(self, record):
+        """Save a finished match. With a database this happens in a background thread
+        (the server's game loop must not wait for the network); flush() waits for it."""
+        if self.db is None:
+            self._save_match_file(record)
+            return
+        thread = threading.Thread(target=self._save_match_db, args=(record,), name="save-match")
+        with self.lock:
+            self._saving = [t for t in self._saving if t.is_alive()] + [thread]
+        thread.start()
+
+    def flush(self, timeout=None):
+        """Wait until the matches being saved in the background are written."""
+        for thread in list(self._saving):
+            thread.join(timeout)
+
+    def _save_match_file(self, record):
         try:
             self._append("matches.jsonl", record)
         except OSError as exc:
             print("Could not save match metrics:", exc, file=sys.stderr)
+
+    def _save_match_db(self, record):
+        try:
+            row = match_row(record)
+            statements = [(f"INSERT OR REPLACE INTO MatchLog ({', '.join(row)}) "
+                           f"VALUES ({', '.join('?' * len(row))})", list(row.values())),
+                          ("DELETE FROM MatchAction WHERE match_id = ?", [record["id"]])]
+            actions = action_rows(record)
+            one = "(" + ", ".join("?" * len(ACTION_COLUMNS)) + ")"
+            for i in range(0, len(actions), ACTIONS_PER_INSERT):
+                chunk = actions[i:i + ACTIONS_PER_INSERT]
+                statements.append((f"INSERT INTO MatchAction ({', '.join(ACTION_COLUMNS)}) VALUES "
+                                   + ", ".join([one] * len(chunk)), [v for r in chunk for v in r]))
+            self.db.transaction(statements)   # all or nothing
+        except (DatabaseError, KeyError, TypeError, IndexError) as exc:
+            print("Could not save the match in the database, keeping it in a file:", exc, file=sys.stderr)
+            self._save_match_file(record)
 
     def save_feedback(self, entry):
         """entry: {"text", "rating" (1-5 or None), "match_id", "source"}; returns the stored record."""
@@ -174,9 +319,36 @@ class MetricsStore:
         self._append("feedback.jsonl", record)
         return record
 
-    def matches(self, limit=None):
+    def matches(self, limit=None, log=True):
+        """Oldest first, the latest `limit` ones. log=False leaves the action logs out."""
+        if self.db is not None:
+            try:
+                return self._matches_db(limit, log)
+            except DatabaseError as exc:
+                print("Could not read matches from the database, using the local file:", exc, file=sys.stderr)
         records = self._read("matches.jsonl")
-        return records[-limit:] if limit else records
+        records = records[-limit:] if limit else records
+        if not log:
+            records = [{k: v for k, v in r.items() if k != "log"} for r in records]
+        return records
+
+    def _matches_db(self, limit, log):
+        sql = "SELECT * FROM MatchLog ORDER BY ended_at DESC, rowid DESC"
+        rows = self.db.execute(sql + " LIMIT ?", [int(limit)]) if limit else self.db.execute(sql)
+        rows.reverse()
+        if not log or not rows:
+            return [record_from_rows(r) for r in rows]
+        by_match = {r["id"]: [] for r in rows}
+        cols = ", ".join(ACTION_COLUMNS)
+        if limit:
+            actions = self.db.execute(f"SELECT {cols} FROM MatchAction WHERE match_id IN "
+                                      f"({', '.join('?' * len(by_match))}) ORDER BY match_id, seq", list(by_match))
+        else:
+            actions = self.db.execute(f"SELECT {cols} FROM MatchAction ORDER BY match_id, seq")
+        for a in actions:
+            if a["match_id"] in by_match:
+                by_match[a["match_id"]].append(a)
+        return [record_from_rows(r, by_match[r["id"]]) for r in rows]
 
     def feedback(self, limit=None):
         """Oldest first. From the database when there is one (the local file is only a fallback)."""
@@ -191,7 +363,7 @@ class MetricsStore:
         return records[-limit:] if limit else records
 
     def summary(self):
-        return summarize(self.matches(), self.feedback())
+        return summarize(self.matches(log=False), self.feedback())
 
 
 def _avg(values):
@@ -255,5 +427,5 @@ def summarize(matches, feedback=()):
 
 if __name__ == "__main__":
     store = MetricsStore(sys.argv[1] if len(sys.argv) > 1 else None)
-    print(f"Metrics in {os.path.abspath(store.dir)}" + (f", feedback in {store.db}" if store.db else ""))
+    print(f"Metrics in {store.db}" if store.db else f"Metrics in {os.path.abspath(store.dir)}")
     print(json.dumps(store.summary(), indent=2))

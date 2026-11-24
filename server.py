@@ -284,9 +284,7 @@ async def metrics_summary(request: Request):
 @app.get("/metrics/matches")
 async def metrics_matches(request: Request, limit: int = 50, log: bool = True):
     check_token(request)
-    records = store.matches(max(1, min(limit, 1000)))
-    if not log:
-        records = [{k: v for k, v in r.items() if k != "log"} for r in records]
+    records = await asyncio.to_thread(store.matches, max(1, min(limit, 1000)), log)
     return JSONResponse(records)
 
 
