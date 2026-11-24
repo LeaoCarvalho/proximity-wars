@@ -1,8 +1,10 @@
 """Match metrics and player feedback.
 
-Every match is saved as one JSON line in <dir>/matches.jsonl when it ends, and
-every feedback message as one line in <dir>/feedback.jsonl. `summary()` turns
-those files into the numbers we track.
+Every match is saved as one JSON line in <dir>/matches.jsonl when it ends.
+Feedback goes to the FeedbackLog table of the Turso database when
+TURSO_DATABASE_URL is set (in .env, see db.py), otherwise (or if the database
+can't be reached) as one line in <dir>/feedback.jsonl. `summary()` turns all
+of it into the numbers we track.
 
 Run `python metrics.py [dir]` to print the summary of a metrics folder.
 """
@@ -14,9 +16,14 @@ import threading
 import time
 import uuid
 
+from db import Database, DatabaseError
+
 DEFAULT_DIR = os.environ.get("METRICS_DIR") or os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "data")
 FEEDBACK_MAX = 2000
+FEEDBACK_TABLE = "FeedbackLog"
+FEEDBACK_COLUMNS = ("id", "at", "text", "rating", "match_id", "source")
+FROM_ENV = object()
 
 
 def now_iso(t=None):
@@ -106,8 +113,10 @@ class MatchRecorder:
 # Storage
 # ----------------------------------------------------------------------
 class MetricsStore:
-    def __init__(self, directory=None):
+    def __init__(self, directory=None, db=FROM_ENV):
+        """db: a db.Database, None for files only, or (default) the one configured in .env."""
         self.dir = directory or DEFAULT_DIR
+        self.db = Database.from_env() if db is FROM_ENV else db
         self.lock = threading.Lock()
 
     def _path(self, name):
@@ -151,9 +160,17 @@ class MetricsStore:
             "at": now_iso(),
             "text": text,
             "rating": rating,
-            "match_id": str(entry.get("match_id") or "")[:40] or None,
-            "source": str(entry.get("source") or "")[:40] or None,
+            "match_id": str(entry.get("match_id") or "")[:16] or None,
+            "source": str(entry.get("source") or "")[:32] or None,
         }
+        if self.db is not None:
+            try:
+                self.db.execute(
+                    f"INSERT INTO {FEEDBACK_TABLE} ({', '.join(FEEDBACK_COLUMNS)}) VALUES (?, ?, ?, ?, ?, ?)",
+                    [record[c] for c in FEEDBACK_COLUMNS])
+                return record
+            except DatabaseError as exc:
+                print("Could not save feedback in the database, keeping it in a file:", exc, file=sys.stderr)
         self._append("feedback.jsonl", record)
         return record
 
@@ -162,6 +179,14 @@ class MetricsStore:
         return records[-limit:] if limit else records
 
     def feedback(self, limit=None):
+        """Oldest first. From the database when there is one (the local file is only a fallback)."""
+        if self.db is not None:
+            try:
+                sql = f"SELECT {', '.join(FEEDBACK_COLUMNS)} FROM {FEEDBACK_TABLE} ORDER BY at DESC, rowid DESC"
+                rows = self.db.execute(sql + " LIMIT ?", [int(limit)]) if limit else self.db.execute(sql)
+                return rows[::-1]
+            except DatabaseError as exc:
+                print("Could not read feedback from the database, using the local file:", exc, file=sys.stderr)
         records = self._read("feedback.jsonl")
         return records[-limit:] if limit else records
 
@@ -230,5 +255,5 @@ def summarize(matches, feedback=()):
 
 if __name__ == "__main__":
     store = MetricsStore(sys.argv[1] if len(sys.argv) > 1 else None)
-    print(f"Metrics in {os.path.abspath(store.dir)}")
+    print(f"Metrics in {os.path.abspath(store.dir)}" + (f", feedback in {store.db}" if store.db else ""))
     print(json.dumps(store.summary(), indent=2))

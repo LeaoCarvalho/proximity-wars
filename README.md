@@ -165,11 +165,13 @@ Cooldowns count the owner's own turns: `1` means the cure is available again on 
 - `feedback_screen.py`: the feedback form
 - `assets/`: sprites, card templates, distance meter and background (client only)
 
-Render needs `rules.py`, `engine.py`, `session.py`, `bot.py` and `metrics.py` next to `server.py`. They have no extra dependencies.
+- `db.py`: Turso database access (HTTP API) and the `.env` loader
+
+Render needs `rules.py`, `engine.py`, `session.py`, `bot.py`, `metrics.py` and `db.py` next to `server.py`. They have no extra dependencies.
 
 ## Metrics
 
-Every match is saved when it ends (finished, or someone left) as one line in `matches.jsonl`, and every feedback message in `feedback.jsonl`. The server writes to `data/` next to `server.py` (set `METRICS_DIR` to change it). Offline matches are saved in `data/` on the player's computer, marked `"mode": "offline"`.
+Every match is saved when it ends (finished, or someone left) as one line in `matches.jsonl`. Feedback is saved in the Turso database when one is configured (see "Database" below), otherwise in `feedback.jsonl`. The server writes to `data/` next to `server.py` (set `METRICS_DIR` to change it). Offline matches are saved in `data/` on the player's computer, marked `"mode": "offline"`.
 
 Each match record has: start/end time and **duration**, who played (human/bot), the rules, the **result** (`finished`, `disconnected` with which players left, or `stopped` for a bot match closed early), the winner, **actions per player** (moves, cures, attacks, card picks, rejected actions) and the full **action log** (time, player, action, card, events, HP after).
 
@@ -185,6 +187,25 @@ Read them from the server:
 Set the `METRICS_TOKEN` environment variable to require `?token=...` on the `/metrics` URLs. For a local folder, `python metrics.py data` prints the same summary.
 
 On Render's free plan the disk is wiped on every deploy or restart, so the files are lost then. Add a persistent disk and point `METRICS_DIR` at it to keep them.
+
+### Database (Turso)
+
+Feedback is stored in the `FeedbackLog` table of a Turso database:
+
+```sql
+CREATE TABLE FeedbackLog (
+  id TEXT(16) PRIMARY KEY NOT NULL,
+  at TEXT(32),          -- UTC, e.g. 2026-11-24T14:05:00Z
+  text TEXT,            -- up to 2000 characters
+  rating INTEGER,       -- 1-5 or NULL
+  match_id TEXT(16),    -- the match it was sent after, or NULL
+  source TEXT(32)       -- "client", or NULL when sent straight to POST /feedback
+);
+```
+
+Copy `.env.example` to `.env` next to `server.py` and fill in `TURSO_DATABASE_URL` (the `libsql://...turso.io` URL from the Turso dashboard) and `TURSO_AUTH_TOKEN` (a read & write token). `.env` is in `.gitignore`, so the token is never committed. On Render, add the same two variables under the service's Environment settings instead; they take priority over a `.env` file.
+
+Without `TURSO_DATABASE_URL` everything stays in local files as before. If the database can't be reached, the feedback is saved in `feedback.jsonl` on the server and an error is printed in the server log. Only the server talks to the database: players' computers never need the token (when the server is unreachable, their feedback is kept in their own `data/feedback.jsonl`).
 
 ## Render notes
 

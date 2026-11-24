@@ -278,7 +278,7 @@ async def root():
 @app.get("/metrics")
 async def metrics_summary(request: Request):
     check_token(request)
-    return JSONResponse(store.summary())
+    return JSONResponse(await asyncio.to_thread(store.summary))
 
 
 @app.get("/metrics/matches")
@@ -293,7 +293,7 @@ async def metrics_matches(request: Request, limit: int = 50, log: bool = True):
 @app.get("/metrics/feedback")
 async def metrics_feedback(request: Request, limit: int = 100):
     check_token(request)
-    return JSONResponse(store.feedback(max(1, min(limit, 1000))))
+    return JSONResponse(await asyncio.to_thread(store.feedback, max(1, min(limit, 1000))))
 
 
 @app.post("/feedback")
@@ -304,7 +304,7 @@ async def post_feedback(request: Request):
         raise HTTPException(status_code=400, detail="Send JSON: {\"text\": ..., \"rating\": 1-5}")
     if not isinstance(body, dict) or not str(body.get("text", "")).strip():
         raise HTTPException(status_code=400, detail="The feedback text is empty.")
-    record = store.save_feedback(body)
+    record = await asyncio.to_thread(store.save_feedback, body)   # the database call blocks
     return JSONResponse({"ok": True, "id": record["id"]})
 
 

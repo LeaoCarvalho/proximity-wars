@@ -58,7 +58,7 @@ class FeedbackScreen:
             ok, reason = send_feedback(url, entry)
             if not ok:
                 try:
-                    MetricsStore().save_feedback({**entry, "source": "client (server unreachable)"})
+                    MetricsStore(db=None).save_feedback({**entry, "source": "client (server unreachable)"})
                     self.result = (False, f"Could not reach the server ({reason}). Saved on this computer "
                                           "in data/feedback.jsonl instead.")
                 except OSError as exc:
