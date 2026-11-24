@@ -10,6 +10,8 @@ track.
 Run `python metrics.py [dir]` to print the summary of a metrics folder.
 """
 
+import copy
+import hashlib
 import json
 import os
 import sys
@@ -29,6 +31,29 @@ ACTION_KINDS = ("move", "heal", "attack", "pick", "rejected", "total")
 ACTION_COLUMNS = ("match_id", "seq", "t", "player", "actor", "action", "direction", "card", "pick_index",
                   "card_name", "p1_hp", "p2_hp", "events", "error")
 ACTIONS_PER_INSERT = 50
+ATTACK_FIELDS = ("name", "damage", "tiles", "desc", "tier", "art")
+DETAILS = ("log", "attack_list")   # the bulky parts of a match record
+
+
+def attack_id(attack):
+    """Fingerprint of an attack definition: the same attack always gets the same id."""
+    canonical = {k: attack.get(k) for k in ATTACK_FIELDS}
+    canonical["tiles"] = sorted(canonical["tiles"] or [])
+    canonical["art"] = canonical["art"] or None
+    return hashlib.sha1(_json(canonical).encode("utf-8")).hexdigest()[:16]
+
+
+def attack_from_row(row):
+    """An Attack table row -> attack definition (rules.py format)."""
+    try:
+        tiles = json.loads(row["tiles"])
+    except (TypeError, ValueError):
+        tiles = []
+    attack = {"name": row["name"], "damage": row["damage"], "tiles": tiles,
+              "desc": row["description"] or "", "tier": row["tier"]}
+    if row.get("art"):
+        attack["art"] = row["art"]
+    return attack
 
 
 # ----------------------------------------------------------------------
@@ -82,9 +107,10 @@ def action_rows(record):
     return rows
 
 
-def record_from_rows(row, actions=None):
+def record_from_rows(row, actions=None, attack_list=None):
     """Rebuild the match record (same shape as MatchRecorder.finish) from database rows.
-    actions: the match's MatchAction rows, or None to leave the log out."""
+    actions: the match's MatchAction rows, attack_list: its attack definitions in order
+    (None leaves them out)."""
     counts = []
     for p in ("p1", "p2"):
         c = {"move": row[f"{p}_moves"], "heal": row[f"{p}_cures"], "attack": row[f"{p}_attacks"],
@@ -134,6 +160,8 @@ def record_from_rows(row, actions=None):
                 e["hp"] = [a["p1_hp"], a["p2_hp"]]
             log.append(e)
         record["log"] = log
+    if attack_list is not None:
+        record["attack_list"] = attack_list
     return record
 
 
@@ -160,6 +188,7 @@ class MatchRecorder:
             "attack_mode": cfg["attack_mode"]["type"],
             "attacks": [a["name"] for a in cfg["attacks"]],
         }
+        self.attack_list = copy.deepcopy(cfg["attacks"])   # full definitions of the attacks in play
         self.started = None
         self.log = []
         self.actions = [{"move": 0, "heal": 0, "attack": 0, "pick": 0, "rejected": 0} for _ in range(2)]
@@ -217,6 +246,7 @@ class MatchRecorder:
             "actions": totals,
             "cures_used": [a["heal"] for a in self.actions],
             "log": self.log,
+            "attack_list": self.attack_list,
         }
 
 
@@ -280,9 +310,19 @@ class MetricsStore:
     def _save_match_db(self, record):
         try:
             row = match_row(record)
-            statements = [(f"INSERT OR REPLACE INTO MatchLog ({', '.join(row)}) "
-                           f"VALUES ({', '.join('?' * len(row))})", list(row.values())),
-                          ("DELETE FROM MatchAction WHERE match_id = ?", [record["id"]])]
+            statements = [("DELETE FROM MatchAction WHERE match_id = ?", [record["id"]]),
+                          ("DELETE FROM MatchAttack WHERE match_id = ?", [record["id"]]),
+                          (f"INSERT OR REPLACE INTO MatchLog ({', '.join(row)}) "
+                           f"VALUES ({', '.join('?' * len(row))})", list(row.values()))]
+            for slot, attack in enumerate(record.get("attack_list") or [], 1):
+                aid = attack_id(attack)
+                statements.append((
+                    "INSERT OR IGNORE INTO Attack (id, name, damage, tiles, description, tier, art, first_seen_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    [aid, attack["name"], attack["damage"], _json(sorted(attack["tiles"])), attack.get("desc", ""),
+                     attack.get("tier"), attack.get("art") or None, record.get("ended_at")]))
+                statements.append(("INSERT INTO MatchAttack (match_id, slot, attack_id) VALUES (?, ?, ?)",
+                                   [record["id"], slot, aid]))
             actions = action_rows(record)
             one = "(" + ", ".join("?" * len(ACTION_COLUMNS)) + ")"
             for i in range(0, len(actions), ACTIONS_PER_INSERT):
@@ -329,7 +369,7 @@ class MetricsStore:
         records = self._read("matches.jsonl")
         records = records[-limit:] if limit else records
         if not log:
-            records = [{k: v for k, v in r.items() if k != "log"} for r in records]
+            records = [{k: v for k, v in r.items() if k not in DETAILS} for r in records]
         return records
 
     def _matches_db(self, limit, log):
@@ -339,16 +379,49 @@ class MetricsStore:
         if not log or not rows:
             return [record_from_rows(r) for r in rows]
         by_match = {r["id"]: [] for r in rows}
+        attacks = {r["id"]: [] for r in rows}
         cols = ", ".join(ACTION_COLUMNS)
+        attack_sql = ("SELECT m.match_id, a.* FROM MatchAttack m JOIN Attack a ON a.id = m.attack_id"
+                      "{} ORDER BY m.match_id, m.slot")
         if limit:
-            actions = self.db.execute(f"SELECT {cols} FROM MatchAction WHERE match_id IN "
-                                      f"({', '.join('?' * len(by_match))}) ORDER BY match_id, seq", list(by_match))
+            where = f" WHERE match_id IN ({', '.join('?' * len(by_match))})"
+            actions, used = self.db.run([
+                (f"SELECT {cols} FROM MatchAction{where} ORDER BY match_id, seq", list(by_match)),
+                (attack_sql.format(where.replace("match_id", "m.match_id")), list(by_match))])
         else:
-            actions = self.db.execute(f"SELECT {cols} FROM MatchAction ORDER BY match_id, seq")
+            actions, used = self.db.run([(f"SELECT {cols} FROM MatchAction ORDER BY match_id, seq", []),
+                                         (attack_sql.format(""), [])])
         for a in actions:
             if a["match_id"] in by_match:
                 by_match[a["match_id"]].append(a)
-        return [record_from_rows(r, by_match[r["id"]]) for r in rows]
+        for a in used:
+            if a["match_id"] in attacks:
+                attacks[a["match_id"]].append(attack_from_row(a))
+        return [record_from_rows(r, by_match[r["id"]], attacks[r["id"]]) for r in rows]
+
+    def attacks(self, limit=300):
+        """Every different attack that was played, most recently used first:
+        [{"id", "attack": {...definition...}, "matches": n, "last_used": time}, ...]."""
+        if self.db is not None:
+            try:
+                rows = self.db.execute(
+                    "SELECT a.*, COUNT(m.match_id) AS matches, MAX(l.ended_at) AS last_used FROM Attack a "
+                    "LEFT JOIN MatchAttack m ON m.attack_id = a.id LEFT JOIN MatchLog l ON l.id = m.match_id "
+                    "GROUP BY a.id ORDER BY last_used DESC, a.name LIMIT ?", [int(limit)])
+                return [{"id": r["id"], "attack": attack_from_row(r), "matches": r["matches"],
+                         "last_used": r["last_used"]} for r in rows]
+            except DatabaseError as exc:
+                print("Could not read attacks from the database, using the local file:", exc, file=sys.stderr)
+        found = {}
+        for record in self._read("matches.jsonl"):
+            for attack in record.get("attack_list") or []:
+                aid = attack_id(attack)
+                entry = found.setdefault(aid, {"id": aid, "attack": attack, "matches": 0, "last_used": None})
+                entry["matches"] += 1
+                entry["last_used"] = max(entry["last_used"] or "", record.get("ended_at") or "") or None
+        ordered = sorted(found.values(), key=lambda e: e["attack"]["name"])
+        ordered.sort(key=lambda e: e["last_used"] or "", reverse=True)
+        return ordered[:limit]
 
     def feedback(self, limit=None):
         """Oldest first. From the database when there is one (the local file is only a fallback)."""

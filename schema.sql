@@ -48,6 +48,29 @@ CREATE TABLE IF NOT EXISTS MatchLog (
 
 CREATE INDEX IF NOT EXISTS MatchLog_ended_at ON MatchLog (ended_at);
 
+-- Every different attack ever played, stored once. Its id is a fingerprint of the definition
+-- (name, damage, tiles, description, tier, art), so changing any of them makes a new attack.
+CREATE TABLE IF NOT EXISTS Attack (
+  id TEXT(16) PRIMARY KEY NOT NULL,
+  name TEXT(40) NOT NULL,
+  damage INTEGER NOT NULL,
+  tiles TEXT NOT NULL,                 -- JSON list of hit distances, e.g. [1,2]
+  description TEXT(80),
+  tier TEXT(8),                        -- bronze | silver | gold
+  art TEXT(80),                        -- file in assets/art, or NULL
+  first_seen_at TEXT(32)               -- UTC end time of the first match that used it
+);
+
+-- Which attacks each match was played with, in the order of its attack list.
+CREATE TABLE IF NOT EXISTS MatchAttack (
+  match_id TEXT(16) NOT NULL REFERENCES MatchLog (id),
+  slot INTEGER NOT NULL,               -- 1, 2, 3... position in the match's attack list
+  attack_id TEXT(16) NOT NULL REFERENCES Attack (id),
+  PRIMARY KEY (match_id, slot)
+);
+
+CREATE INDEX IF NOT EXISTS MatchAttack_attack ON MatchAttack (attack_id);
+
 -- The action log: one row per action of a match, in order.
 CREATE TABLE IF NOT EXISTS MatchAction (
   match_id TEXT(16) NOT NULL REFERENCES MatchLog (id),

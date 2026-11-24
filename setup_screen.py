@@ -500,6 +500,8 @@ class AttackEditor:
             b = Button(label, fn, h=32, size=16).place(x, y)
             self.list_buttons.append(b)
             x += b.rect.w + 6
+        self.list_buttons.append(Button("Add from database...", self.open_browser, w=self.LIST_W, h=32, size=16)
+                                 .place(self.LIST_X, y + 40))
 
         self.path = TextField("attacks.json", w=200, placeholder="file.json")
         self.bottom = [
@@ -575,6 +577,38 @@ class AttackEditor:
         self.selected = -1
         self._select(0)
         self.msg.info(f"Loaded {len(attacks)} attack(s) from {source}.")
+
+    def item_ids(self):
+        """Fingerprints (metrics.attack_id) of the valid attacks in the list."""
+        from metrics import attack_id
+        self._store()
+        ids = set()
+        for raw in self.attacks_raw():
+            try:
+                ids.add(attack_id(validate_attacks([raw])[0]))
+            except ConfigError:
+                pass
+        return ids
+
+    def add_attacks(self, attacks):
+        """Append attacks that are not in the list yet; returns how many were added."""
+        from metrics import attack_id
+        have = self.item_ids()
+        added = 0
+        for a in attacks:
+            if attack_id(a) not in have:
+                self.items.append(self._item(a))
+                have.add(attack_id(a))
+                added += 1
+        if added:
+            self.selected = -1
+            self._select(len(self.items) - 1)
+        return added
+
+    def open_browser(self):
+        from attack_browser import AttackBrowser
+        self._store()
+        self.app.set_screen(AttackBrowser(self.app, self))
 
     # actions -----------------------------------------------------------
     def new(self):

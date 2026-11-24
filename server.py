@@ -294,6 +294,12 @@ async def metrics_feedback(request: Request, limit: int = 100):
     return JSONResponse(await asyncio.to_thread(store.feedback, max(1, min(limit, 1000))))
 
 
+@app.get("/attacks")
+async def stored_attacks(limit: int = 300):
+    """Every different attack played on this server (for the attack editor's "From database")."""
+    return JSONResponse(await asyncio.to_thread(store.attacks, max(1, min(limit, 1000))))
+
+
 @app.post("/feedback")
 async def post_feedback(request: Request):
     try:

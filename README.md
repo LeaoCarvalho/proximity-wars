@@ -167,6 +167,7 @@ Cooldowns count the owner's own turns: `1` means the cure is available again on 
 
 - `db.py`: Turso database access (HTTP API), the `.env` loader, and `python db.py create`
 - `schema.sql`: the database tables
+- `attack_browser.py`: the attack editor's "Add from database" screen
 
 Render needs `rules.py`, `engine.py`, `session.py`, `bot.py`, `metrics.py` and `db.py` next to `server.py`. They have no extra dependencies.
 
@@ -184,6 +185,7 @@ Read them from the server:
 | `GET /metrics/matches?limit=50` | The latest match records with action logs (`&log=false` leaves the logs out) |
 | `GET /metrics/feedback` | The latest feedback |
 | `POST /feedback` | `{"text": "...", "rating": 1-5, "match_id": "..."}` |
+| `GET /attacks` | Every different attack played (definition, number of matches, last played); used by the attack editor |
 
 Set the `METRICS_TOKEN` environment variable to require `?token=...` on the `/metrics` URLs. For a local folder, `python metrics.py data` prints the same summary.
 
@@ -197,15 +199,19 @@ With a Turso database configured, the server stores everything there instead of 
 |---|---|---|
 | `MatchLog` | match | mode, who played, start/end/duration, result, winner, who disconnected, actions per player (moves, cures, attacks, picks, rejected, total), the rules |
 | `MatchAction` | action | the action log: order, time, player, human/bot, action, card, HP after, events, error |
+| `Attack` | different attack | name, damage, hit distances, description, tier, art. Each attack is stored once: its id is a fingerprint of the definition, so editing any field makes a new attack |
+| `MatchAttack` | attack in a match | which attacks each match was played with, in list order |
 | `FeedbackLog` | feedback message | text, rating, match, source |
 
 The tables are in [`schema.sql`](schema.sql). Players are numbered 1 and 2 in the database.
 
 1. Copy `.env.example` to `.env` next to `server.py` and fill in `TURSO_DATABASE_URL` (the `libsql://...turso.io` URL from the Turso dashboard) and `TURSO_AUTH_TOKEN` (a read & write token). `.env` is in `.gitignore`, so the token is never committed.
-2. Create the tables once: `python db.py create` (or paste `schema.sql` into the Turso SQL console). Running it again is harmless.
+2. Create the tables once: `python db.py create` (or paste `schema.sql` into the Turso SQL console). Running it again is harmless and adds tables that are new.
 3. On Render, add the same two variables under the service's Environment settings; they take priority over a `.env` file.
 
-`GET /metrics`, `/metrics/matches` and `/metrics/feedback` (and `python metrics.py`) then read from the database. A match is saved in one transaction (all of it or nothing), in the background so the game never waits for the database.
+`GET /metrics`, `/metrics/matches` and `/metrics/feedback` (and `python metrics.py`) then read from the database. `GET /attacks` lists every different attack played, with how many matches used it.
+
+**Loading stored attacks in the game:** in Create match > Edit attacks..., click **Add from database...**. It lists every attack that was played (most recently played first), with a search box and a card preview. Click attacks to select them, then **Add selected** (attacks already in your list are skipped) or **Replace list with selected**. The list comes from the database in `.env` if your computer has one, otherwise from the server in the menu's Server box. A match is saved in one transaction (all of it or nothing), in the background so the game never waits for the database.
 
 Without `TURSO_DATABASE_URL` everything stays in local files as before. If the database can't be reached, the match or feedback is saved in the local `.jsonl` file instead and an error is printed in the server log (those records are not copied to the database later). Only the server talks to the database: players' computers never need the token, and their offline matches stay in their own `data/` folder.
 
