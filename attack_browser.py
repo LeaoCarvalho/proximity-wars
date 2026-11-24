@@ -48,6 +48,34 @@ def fetch_stored_attacks(http_url, timeout=10):
     return out, source
 
 
+def save_attacks(attacks, http_url, dev_key, timeout=15):
+    """Dev mode: store attacks in the database. Directly when this computer's .env has the
+    database, otherwise through the server (POST /attacks with the dev key).
+    Returns (added, already_stored, where). Raises OSError / ValueError / DatabaseError."""
+    store = MetricsStore()
+    if store.db is not None:
+        added, already = store.save_attacks(attacks)
+        where = "the database"
+    else:
+        if not dev_key:
+            raise ValueError("no database and no DEV_KEY in .env, so there is nowhere to save")
+        data = json.dumps({"attacks": attacks}).encode("utf-8")
+        req = urllib.request.Request(http_url.rstrip("/") + "/attacks", data=data, method="POST",
+                                     headers={"Content-Type": "application/json", "X-Dev-Key": dev_key})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                answer = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = json.loads(exc.read().decode("utf-8")).get("detail")
+            except ValueError:
+                detail = None
+            raise ValueError(detail or f"the server answered {exc.code}") from None
+        added, already, where = int(answer["added"]), int(answer["already"]), "the server's database"
+    KNOWN_IDS.update(attack_id(a) for a in attacks)
+    return added, already, where
+
+
 def unknown_attacks(attacks, http_url, allowed=()):
     """Names of the attacks that are neither built in, in `allowed`, nor stored in the database.
     Looks the database up only when needed. Raises OSError / ValueError if it can't be reached."""
@@ -232,7 +260,8 @@ class AttackBrowser:
             surface.blit(scaled_card(attack, w), (px, self.LIST_Y))
             y = self.LIST_Y + round(w * 286 / 416) + 14
             n = entry.get("matches") or 0
-            text(surface, f"Played in {n} match{'es' if n != 1 else ''}", (px, y), 17, MUTED)
+            text(surface, f"Played in {n} match{'es' if n != 1 else ''}" if n else "Saved, not played yet",
+                 (px, y), 17, MUTED)
             if entry.get("last_used"):
                 text(surface, "Last played " + entry["last_used"].replace("T", " ").replace("Z", " UTC"),
                      (px, y + 24), 16, DIM)

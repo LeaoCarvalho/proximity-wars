@@ -522,8 +522,18 @@ class AttackEditor:
             b = Button(label, fn, h=32, size=16).place(x, y)
             self.list_buttons.append(b)
             x += b.rect.w + 6
-        self.list_buttons.append(Button("Add from database...", self.open_browser, w=self.LIST_W, h=32, size=16)
-                                 .place(self.LIST_X, y + 40))
+        if self.dev:
+            third = (self.LIST_W - 12) // 3
+            for i, (label, fn) in enumerate([("Add from DB...", self.open_browser),
+                                             ("Save this to DB", lambda: self.save_to_db(all_=False)),
+                                             ("Save all to DB", lambda: self.save_to_db(all_=True))]):
+                self.list_buttons.append(Button(label, fn, w=third, h=32, size=16)
+                                         .place(self.LIST_X + i * (third + 6), y + 40))
+        else:
+            self.list_buttons.append(Button("Add from database...", self.open_browser, w=self.LIST_W, h=32,
+                                            size=16).place(self.LIST_X, y + 40))
+        self.saving = False
+        self.save_result = None
 
         self.path = TextField("attacks.json", w=200, placeholder="file.json")
         self.bottom = [
@@ -628,6 +638,31 @@ class AttackEditor:
             self.selected = -1
             self._select(len(self.items) - 1)
         return added
+
+    def save_to_db(self, all_):
+        """Dev mode: store the selected attack (or the whole list) in the database."""
+        if not self.dev or self.saving:
+            return
+        self._store()
+        raw = self.attacks_raw()
+        try:
+            attacks = validate_attacks(raw if all_ else raw[self.selected:self.selected + 1])
+        except ConfigError as exc:
+            self.msg.errors(exc.errors, "Fix these before saving:")
+            return
+        from attack_browser import save_attacks
+        url, key = self.app.http_url(), self.app.dev_key
+        self.saving = True
+        self.msg.info("Saving to the database...")
+
+        def work():
+            try:
+                self.save_result = ("ok",) + save_attacks(attacks, url, key)
+            except Exception as exc:   # network, database or server refusal
+                self.save_result = ("error", str(getattr(exc, "reason", exc)) or exc.__class__.__name__)
+
+        import threading
+        threading.Thread(target=work, daemon=True).start()
 
     def open_browser(self):
         from attack_browser import AttackBrowser
@@ -749,7 +784,19 @@ class AttackEditor:
             self.cancel()
 
     def update(self):
-        pass
+        if self.save_result is None:
+            return
+        result, self.save_result, self.saving = self.save_result, None, False
+        if result[0] == "error":
+            self.msg.errors([result[1]], "Could not save to the database:")
+            return
+        _, added, already, where = result
+        if added and already:
+            self.msg.info(f"Saved {added} attack(s) in {where} ({already} already there).")
+        elif added:
+            self.msg.info(f"Saved {added} attack(s) in {where}.")
+        else:
+            self.msg.info(f"Already in {where}, nothing to save.")
 
     def _draw_card_preview(self, surface, rect):
         """The selected attack as it looks in a match (only when it is valid)."""

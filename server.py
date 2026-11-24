@@ -30,7 +30,7 @@ from fastapi.responses import JSONResponse
 
 from db import DatabaseError, load_env
 from metrics import MetricsStore, attack_id, builtin_attack_ids
-from rules import ConfigError, default_config, validate_config
+from rules import ConfigError, default_config, validate_attacks, validate_config
 from session import BOT_DELAY, BOT_DELAY_FAST, MatchSession
 
 MODES = ("pvp", "bot", "bot_vs_bot")
@@ -333,6 +333,27 @@ async def metrics_feedback(request: Request, limit: int = 100):
 async def stored_attacks(limit: int = 300):
     """Every different attack played on this server (for the attack editor's "From database")."""
     return JSONResponse(await asyncio.to_thread(store.attacks, max(1, min(limit, 1000))))
+
+
+@app.post("/attacks")
+async def save_attacks(request: Request):
+    """Dev mode: store attacks without playing them. Needs the X-Dev-Key header (DEV_KEY)."""
+    key = request.headers.get("x-dev-key", "")
+    if DEV_KEY is None or not hmac.compare_digest(key.encode(), DEV_KEY.encode()):
+        raise HTTPException(status_code=403, detail="Only dev mode (with the server's DEV_KEY) can save attacks.")
+    try:
+        body = await request.json()
+        attacks = validate_attacks(body.get("attacks") if isinstance(body, dict) else body)
+    except ConfigError as exc:
+        raise HTTPException(status_code=400, detail="; ".join(exc.errors))
+    except Exception:
+        raise HTTPException(status_code=400, detail='Send JSON: {"attacks": [...]}')
+    try:
+        added, already = await asyncio.to_thread(store.save_attacks, attacks)
+    except (DatabaseError, OSError) as exc:
+        raise HTTPException(status_code=503, detail=f"Could not save the attacks: {exc}")
+    print(f"Dev client saved attacks: {added} added, {already} already stored.")
+    return JSONResponse({"ok": True, "added": added, "already": already})
 
 
 @app.post("/feedback")

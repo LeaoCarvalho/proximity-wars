@@ -415,30 +415,58 @@ class MetricsStore:
             rows = self.db.execute(f"SELECT id FROM Attack WHERE id IN ({', '.join('?' * len(ids))})", ids)
             return {r["id"] for r in rows}
         wanted = set(ids)
-        return {attack_id(a) for r in self._read("matches.jsonl") for a in r.get("attack_list") or []} & wanted
+        known = {attack_id(a) for r in self._read("matches.jsonl") for a in r.get("attack_list") or []}
+        known |= {attack_id(e["attack"]) for e in self._read("attacks.jsonl") if isinstance(e.get("attack"), dict)}
+        return known & wanted
+
+    def save_attacks(self, attacks):
+        """Store attack definitions (already validated) without a match, e.g. from the dev
+        attack editor. Returns (added, already_stored). Raises DatabaseError / OSError."""
+        unique = {}
+        for a in attacks:
+            unique.setdefault(attack_id(a), a)
+        stored = self.stored_attack_ids(list(unique))
+        new = {aid: a for aid, a in unique.items() if aid not in stored}
+        if new and self.db is not None:
+            self.db.transaction([
+                ("INSERT OR IGNORE INTO Attack (id, name, damage, tiles, description, tier, art, first_seen_at) "
+                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                 [aid, a["name"], a["damage"], _json(sorted(a["tiles"])), a.get("desc", ""), a.get("tier"),
+                  a.get("art") or None, now_iso()]) for aid, a in new.items()])
+        elif new:
+            for a in new.values():
+                self._append("attacks.jsonl", {"at": now_iso(), "attack": a})
+        return len(new), len(unique) - len(new)
 
     def attacks(self, limit=300):
-        """Every different attack that was played, most recently used first:
-        [{"id", "attack": {...definition...}, "matches": n, "last_used": time}, ...]."""
+        """Every different attack that was played or saved, most recently used (or saved) first:
+        [{"id", "attack": {...definition...}, "matches": n, "last_used": time, "saved_at": time}, ...]."""
         if self.db is not None:
             try:
                 rows = self.db.execute(
                     "SELECT a.*, COUNT(m.match_id) AS matches, MAX(l.ended_at) AS last_used FROM Attack a "
                     "LEFT JOIN MatchAttack m ON m.attack_id = a.id LEFT JOIN MatchLog l ON l.id = m.match_id "
-                    "GROUP BY a.id ORDER BY last_used DESC, a.name LIMIT ?", [int(limit)])
+                    "GROUP BY a.id ORDER BY COALESCE(MAX(l.ended_at), a.first_seen_at) DESC, a.name LIMIT ?",
+                    [int(limit)])
                 return [{"id": r["id"], "attack": attack_from_row(r), "matches": r["matches"],
-                         "last_used": r["last_used"]} for r in rows]
+                         "last_used": r["last_used"], "saved_at": r["first_seen_at"]} for r in rows]
             except DatabaseError as exc:
                 print("Could not read attacks from the database, using the local file:", exc, file=sys.stderr)
         found = {}
+        for e in self._read("attacks.jsonl"):
+            if isinstance(e.get("attack"), dict):
+                aid = attack_id(e["attack"])
+                found.setdefault(aid, {"id": aid, "attack": e["attack"], "matches": 0, "last_used": None,
+                                       "saved_at": e.get("at")})
         for record in self._read("matches.jsonl"):
             for attack in record.get("attack_list") or []:
                 aid = attack_id(attack)
-                entry = found.setdefault(aid, {"id": aid, "attack": attack, "matches": 0, "last_used": None})
+                entry = found.setdefault(aid, {"id": aid, "attack": attack, "matches": 0, "last_used": None,
+                                               "saved_at": record.get("ended_at")})
                 entry["matches"] += 1
                 entry["last_used"] = max(entry["last_used"] or "", record.get("ended_at") or "") or None
         ordered = sorted(found.values(), key=lambda e: e["attack"]["name"])
-        ordered.sort(key=lambda e: e["last_used"] or "", reverse=True)
+        ordered.sort(key=lambda e: e["last_used"] or e["saved_at"] or "", reverse=True)
         return ordered[:limit]
 
     def feedback(self, limit=None):
@@ -517,6 +545,11 @@ def summarize(matches, feedback=()):
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["save-builtin-attacks"]:
+        store = MetricsStore()
+        added, already = store.save_attacks(validate_attacks(CLASSIC_ATTACKS + SAMPLE_BANK))
+        print(f"Built-in attacks in {store.db or os.path.abspath(store.dir)}: {added} added, {already} already there.")
+        sys.exit(0)
     store = MetricsStore(sys.argv[1] if len(sys.argv) > 1 else None)
     print(f"Metrics in {store.db}" if store.db else f"Metrics in {os.path.abspath(store.dir)}")
     print(json.dumps(store.summary(), indent=2))
