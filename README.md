@@ -181,12 +181,19 @@ Read them from the server:
 
 | URL | What |
 |---|---|
-| `GET /metrics` | Summary: matches finished / with a disconnect (one or both players), average duration, actions per player, how often the bot won (vs humans and in total), cures used (total, by winners, by losers), feedback count and average rating |
+| `GET /metrics` | Summary: matches finished / with a disconnect (one or both players), average duration, actions per player, wins by Player 1 and Player 2, per attack stats (see below), how often the bot won (vs humans and in total), cures used (total, by winners, by losers), feedback count and average rating |
 | `GET /metrics/matches?limit=50` | The latest match records with action logs (`&log=false` leaves the logs out) |
 | `GET /metrics/feedback` | The latest feedback |
 | `POST /feedback` | `{"text": "...", "rating": 1-5, "match_id": "..."}` |
 | `POST /attacks` | Dev mode: `{"attacks": [...]}` with the `X-Dev-Key: <DEV_KEY>` header stores attacks without playing them |
 | `GET /attacks` | Every different attack played (definition, number of matches, last played); used by the attack editor |
+
+Per attack, the summary's `attacks` list has: `matches` (matches it was in play), `uses` (times cast, by either player), `first` (times it was the first attack of a match), `last` (the last attack of a match) and `finishing` (the last attack of a finished match, i.e. the winning blow). Attacks count as different when any field differs. `wins` has `player_1`, `player_2` and `player_1_rate` over finished matches. In SQL, per attack:
+
+```sql
+SELECT a.name, SUM(m.uses) AS uses, SUM(m.is_first) AS first, SUM(m.is_last) AS last
+FROM MatchAttack m JOIN Attack a ON a.id = m.attack_id GROUP BY a.id ORDER BY uses DESC;
+```
 
 Set the `METRICS_TOKEN` environment variable to require `?token=...` on the `/metrics` URLs. For a local folder, `python metrics.py data` prints the same summary.
 
@@ -201,13 +208,13 @@ With a Turso database configured, the server stores everything there instead of 
 | `MatchLog` | match | mode, who played, start/end/duration, result, winner, who disconnected, actions per player (moves, cures, attacks, picks, rejected, total), the rules |
 | `MatchAction` | action | the action log: order, time, player, human/bot, action, card, HP after, events, error |
 | `Attack` | different attack | name, damage, hit distances, description, tier, art. Each attack is stored once: its id is a fingerprint of the definition, so editing any field makes a new attack |
-| `MatchAttack` | attack in a match | which attacks each match was played with, in list order |
+| `MatchAttack` | attack in a match | which attacks each match was played with, in list order, with `uses` (times cast), `is_first` / `is_last` (the match's first / last attack cast) |
 | `FeedbackLog` | feedback message | text, rating, match, source |
 
 The tables are in [`schema.sql`](schema.sql). Players are numbered 1 and 2 in the database.
 
 1. Copy `.env.example` to `.env` next to `server.py` and fill in `TURSO_DATABASE_URL` (the `libsql://...turso.io` URL from the Turso dashboard) and `TURSO_AUTH_TOKEN` (a read & write token). `.env` is in `.gitignore`, so the token is never committed.
-2. Create the tables once: `python db.py create` (or paste `schema.sql` into the Turso SQL console). Running it again is harmless and adds tables that are new.
+2. Create the tables once: `python db.py create` (or paste `schema.sql` into the Turso SQL console). Run it again after updating the game: it adds new tables and columns (filling the new columns in for older matches) and leaves your data alone.
 3. On Render, add the same two variables under the service's Environment settings; they take priority over a `.env` file.
 
 `GET /metrics`, `/metrics/matches` and `/metrics/feedback` (and `python metrics.py`) then read from the database. `GET /attacks` lists every different attack played, with how many matches used it.

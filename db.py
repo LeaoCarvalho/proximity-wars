@@ -182,6 +182,38 @@ def _rows(result):
     return [{n: _value(c) for n, c in zip(names, row)} for row in result.get("rows", [])]
 
 
+# Columns added after a table was first created: (table, column, definition, backfill statements).
+# `python db.py create` adds the missing ones; the backfill fills them in for matches saved before.
+_CAST = ("SELECT x.card_name FROM MatchAction x WHERE x.match_id = MatchAttack.match_id "
+         "AND x.action = 'attack' AND x.error IS NULL ORDER BY x.seq {} LIMIT 1")
+_NAME = "(SELECT name FROM Attack WHERE id = MatchAttack.attack_id)"
+MIGRATIONS = [
+    ("MatchAttack", "uses", "INTEGER NOT NULL DEFAULT 0",
+     [f"UPDATE MatchAttack SET uses = (SELECT COUNT(*) FROM MatchAction x WHERE x.match_id = MatchAttack.match_id "
+      f"AND x.action = 'attack' AND x.error IS NULL AND x.card_name = {_NAME})"]),
+    ("MatchAttack", "is_first", "INTEGER NOT NULL DEFAULT 0",
+     [f"UPDATE MatchAttack SET is_first = CASE WHEN ({_CAST.format('ASC')}) = {_NAME} THEN 1 ELSE 0 END"]),
+    ("MatchAttack", "is_last", "INTEGER NOT NULL DEFAULT 0",
+     [f"UPDATE MatchAttack SET is_last = CASE WHEN ({_CAST.format('DESC')}) = {_NAME} THEN 1 ELSE 0 END"]),
+]
+
+
+def migrate(database):
+    """Add the columns of MIGRATIONS that are missing (and backfill them). Returns what was added."""
+    added = []
+    for table, column, definition, backfill in MIGRATIONS:
+        try:
+            database.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        except DatabaseError as exc:
+            if "duplicate column" in str(exc).lower():
+                continue
+            raise
+        if backfill:
+            database.run([(sql, []) for sql in backfill])
+        added.append(f"{table}.{column}")
+    return added
+
+
 def split_sql(script):
     """Statements of a .sql file (no semicolons inside strings or comments, as in schema.sql)."""
     lines = [line.split("--", 1)[0] for line in script.splitlines()]
@@ -202,7 +234,10 @@ if __name__ == "__main__":
         statements = split_sql(f.read())
     try:
         database.run([(s, []) for s in statements])
+        added = migrate(database)
     except DatabaseError as exc:
         print("Failed:", exc)
         sys.exit(1)
     print(f"Ran {len(statements)} statement(s) from {os.path.basename(path)} on {database.url}.")
+    print("Added columns (and filled them in for older matches): " + ", ".join(added) if added
+          else "All columns were already there.")

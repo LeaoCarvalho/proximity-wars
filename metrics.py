@@ -33,7 +33,7 @@ ACTION_COLUMNS = ("match_id", "seq", "t", "player", "actor", "action", "directio
                   "card_name", "p1_hp", "p2_hp", "events", "error")
 ACTIONS_PER_INSERT = 50
 ATTACK_FIELDS = ("name", "damage", "tiles", "desc", "tier", "art")
-DETAILS = ("log", "attack_list")   # the bulky parts of a match record
+DETAILS = ("log",)   # the bulky part of a match record
 
 
 def attack_id(attack):
@@ -113,7 +113,7 @@ def action_rows(record):
     return rows
 
 
-def record_from_rows(row, actions=None, attack_list=None):
+def record_from_rows(row, actions=None, attack_list=None, attack_stats=None):
     """Rebuild the match record (same shape as MatchRecorder.finish) from database rows.
     actions: the match's MatchAction rows, attack_list: its attack definitions in order
     (None leaves them out)."""
@@ -168,6 +168,8 @@ def record_from_rows(row, actions=None, attack_list=None):
         record["log"] = log
     if attack_list is not None:
         record["attack_list"] = attack_list
+    if attack_stats is not None:
+        record["attack_stats"] = attack_stats
     return record
 
 
@@ -195,6 +197,11 @@ class MatchRecorder:
             "attacks": [a["name"] for a in cfg["attacks"]],
         }
         self.attack_list = copy.deepcopy(cfg["attacks"])   # full definitions of the attacks in play
+        self.slot_of = {}                                    # attack fingerprint -> index in attack_list
+        for i, a in enumerate(self.attack_list):
+            self.slot_of.setdefault(attack_id(a), i)
+        self.attack_stats = [{"uses": 0, "first": False, "last": False} for _ in self.attack_list]
+        self.first_attack = self.last_attack = None         # slots of the first / last attack cast
         self.started = None
         self.log = []
         self.actions = [{"move": 0, "heal": 0, "attack": 0, "pick": 0, "rejected": 0} for _ in range(2)]
@@ -214,7 +221,7 @@ class MatchRecorder:
             if key in msg:
                 entry[key] = msg[key]
         if card:
-            entry["card_name"] = card
+            entry["card_name"] = card["name"]
         state = next((m for p, m in outbox if p == player and m.get("type") == "state"), None)
         if error:
             entry["error"] = error
@@ -222,6 +229,13 @@ class MatchRecorder:
         else:
             if kind in self.actions[player]:
                 self.actions[player][kind] += 1
+            if kind == "attack" and card:
+                slot = self.slot_of.get(attack_id(card))
+                if slot is not None:
+                    self.attack_stats[slot]["uses"] += 1
+                    if self.first_attack is None:
+                        self.first_attack = slot
+                    self.last_attack = slot
             if state:
                 entry["events"] = state.get("events", [])
                 entry["hp"] = [state["your_hp"], state["opponent_hp"]] if player == 0 else \
@@ -253,7 +267,16 @@ class MatchRecorder:
             "cures_used": [a["heal"] for a in self.actions],
             "log": self.log,
             "attack_list": self.attack_list,
+            "attack_stats": self._attack_stats(),
         }
+
+    def _attack_stats(self):
+        """Per attack of attack_list: times cast, and whether it was the match's first / last attack."""
+        stats = [dict(s) for s in self.attack_stats]
+        if self.first_attack is not None:
+            stats[self.first_attack]["first"] = True
+            stats[self.last_attack]["last"] = True
+        return stats
 
 
 # ----------------------------------------------------------------------
@@ -320,15 +343,20 @@ class MetricsStore:
                           ("DELETE FROM MatchAttack WHERE match_id = ?", [record["id"]]),
                           (f"INSERT OR REPLACE INTO MatchLog ({', '.join(row)}) "
                            f"VALUES ({', '.join('?' * len(row))})", list(row.values()))]
+            stats = record.get("attack_stats") or []
             for slot, attack in enumerate(record.get("attack_list") or [], 1):
                 aid = attack_id(attack)
+                st = stats[slot - 1] if slot <= len(stats) else {}
                 statements.append((
                     "INSERT OR IGNORE INTO Attack (id, name, damage, tiles, description, tier, art, first_seen_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     [aid, attack["name"], attack["damage"], _json(sorted(attack["tiles"])), attack.get("desc", ""),
                      attack.get("tier"), attack.get("art") or None, record.get("ended_at")]))
-                statements.append(("INSERT INTO MatchAttack (match_id, slot, attack_id) VALUES (?, ?, ?)",
-                                   [record["id"], slot, aid]))
+                statements.append((
+                    "INSERT INTO MatchAttack (match_id, slot, attack_id, uses, is_first, is_last) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    [record["id"], slot, aid, st.get("uses", 0), int(bool(st.get("first"))),
+                     int(bool(st.get("last")))]))
             actions = action_rows(record)
             one = "(" + ", ".join("?" * len(ACTION_COLUMNS)) + ")"
             for i in range(0, len(actions), ACTIONS_PER_INSERT):
@@ -382,28 +410,33 @@ class MetricsStore:
         sql = "SELECT * FROM MatchLog ORDER BY ended_at DESC, rowid DESC"
         rows = self.db.execute(sql + " LIMIT ?", [int(limit)]) if limit else self.db.execute(sql)
         rows.reverse()
-        if not log or not rows:
-            return [record_from_rows(r) for r in rows]
+        if not rows:
+            return []
         by_match = {r["id"]: [] for r in rows}
         attacks = {r["id"]: [] for r in rows}
+        stats = {r["id"]: [] for r in rows}
         cols = ", ".join(ACTION_COLUMNS)
-        attack_sql = ("SELECT m.match_id, a.* FROM MatchAttack m JOIN Attack a ON a.id = m.attack_id"
-                      "{} ORDER BY m.match_id, m.slot")
+        attack_sql = ("SELECT m.match_id, m.uses, m.is_first, m.is_last, a.* FROM MatchAttack m "
+                      "JOIN Attack a ON a.id = m.attack_id{} ORDER BY m.match_id, m.slot")
+        action_sql = f"SELECT {cols} FROM MatchAction{{}} ORDER BY match_id, seq"
+        where, args = "", []
         if limit:
-            where = f" WHERE match_id IN ({', '.join('?' * len(by_match))})"
-            actions, used = self.db.run([
-                (f"SELECT {cols} FROM MatchAction{where} ORDER BY match_id, seq", list(by_match)),
-                (attack_sql.format(where.replace("match_id", "m.match_id")), list(by_match))])
-        else:
-            actions, used = self.db.run([(f"SELECT {cols} FROM MatchAction ORDER BY match_id, seq", []),
-                                         (attack_sql.format(""), [])])
-        for a in actions:
-            if a["match_id"] in by_match:
-                by_match[a["match_id"]].append(a)
-        for a in used:
+            where, args = f" WHERE match_id IN ({', '.join('?' * len(by_match))})", list(by_match)
+        statements = [(attack_sql.format(where.replace("match_id", "m.match_id")), args)]
+        if log:
+            statements.append((action_sql.format(where), args))
+        results = self.db.run(statements)
+        for a in results[0]:
             if a["match_id"] in attacks:
                 attacks[a["match_id"]].append(attack_from_row(a))
-        return [record_from_rows(r, by_match[r["id"]], attacks[r["id"]]) for r in rows]
+                stats[a["match_id"]].append({"uses": a["uses"] or 0, "first": bool(a["is_first"]),
+                                             "last": bool(a["is_last"])})
+        if not log:
+            return [record_from_rows(r, None, attacks[r["id"]], stats[r["id"]]) for r in rows]
+        for a in results[1]:
+            if a["match_id"] in by_match:
+                by_match[a["match_id"]].append(a)
+        return [record_from_rows(r, by_match[r["id"]], attacks[r["id"]], stats[r["id"]]) for r in rows]
 
     def stored_attack_ids(self, ids):
         """Which of these attack fingerprints are stored (database, or the local match file
@@ -490,6 +523,31 @@ def _avg(values):
     return round(sum(values) / len(values), 2) if values else None
 
 
+def attack_summary(matches):
+    """Per different attack, over the matches that recorded attack stats: in how many matches it was
+    in play, times cast, times it was the first / last attack of a match, and the finishing blows
+    (last attack of a finished match). Most cast first."""
+    out = {}
+    for m in matches:
+        attack_list, stats = m.get("attack_list"), m.get("attack_stats")
+        if not attack_list or not stats or len(stats) != len(attack_list):
+            continue
+        seen = set()
+        for attack, st in zip(attack_list, stats):
+            aid = attack_id(attack)
+            e = out.setdefault(aid, {"id": aid, "name": attack["name"], "tier": attack.get("tier"),
+                                     "damage": attack["damage"], "tiles": attack["tiles"], "matches": 0,
+                                     "uses": 0, "first": 0, "last": 0, "finishing": 0})
+            if aid not in seen:
+                e["matches"] += 1
+                seen.add(aid)
+            e["uses"] += st.get("uses", 0)
+            e["first"] += int(bool(st.get("first")))
+            e["last"] += int(bool(st.get("last")))
+            e["finishing"] += int(bool(st.get("last")) and m["result"] == "finished")
+    return sorted(out.values(), key=lambda e: (-e["uses"], e["name"]))
+
+
 def summarize(matches, feedback=()):
     finished = [m for m in matches if m["result"] == "finished"]
     disconnected = [m for m in matches if m["result"] == "disconnected"]
@@ -504,6 +562,8 @@ def summarize(matches, feedback=()):
         return [a["total"] for m in ms for a in m["actions"]]
 
     ratings = [f["rating"] for f in feedback if f.get("rating")]
+    won = [m for m in finished if m["winner"] is not None]
+    p1_wins = sum(1 for m in won if m["winner"] == 0)
     return {
         "matches": {
             "total": len(matches),
@@ -524,6 +584,12 @@ def summarize(matches, feedback=()):
             "average_finished": _avg(actions(finished)),
             "average_all": _avg(actions(matches)),
         },
+        "wins": {
+            "player_1": p1_wins,
+            "player_2": len(won) - p1_wins,
+            "player_1_rate": round(p1_wins / len(won), 3) if won else None,
+        },
+        "attacks": attack_summary(matches),
         "bot": {
             "vs_human_finished": len(vs_bot),
             "bot_won_vs_human": sum(1 for m in vs_bot if m["winner_kind"] == "bot"),

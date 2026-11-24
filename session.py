@@ -35,14 +35,15 @@ class MatchSession:
     def act(self, player, msg):
         if self.closed:
             return [(player, {"type": "error", "message": "The match is over."})]
-        card = self._card_name(player, msg)
+        card = self._card(player, msg)
         outbox = self.match.handle(player, msg)
         self.recorder.action(player, msg, outbox, card=card)
         if self.match.game_over:
             self._close("finished", winner=self.match.winner)
         return outbox
 
-    def _card_name(self, player, msg):
+    def _card(self, player, msg):
+        """The card an attack / pick action refers to (before the engine changes the hand)."""
         p = self.match.players[player]
         if msg.get("action") == "attack":
             cards, i = p.hand, msg.get("card")
@@ -51,7 +52,7 @@ class MatchSession:
         else:
             return None
         if isinstance(i, int) and not isinstance(i, bool) and 0 <= i < len(cards):
-            return cards[i]["name"]
+            return cards[i]
         return None
 
     def pending_bot(self):

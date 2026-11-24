@@ -61,11 +61,14 @@ CREATE TABLE IF NOT EXISTS Attack (
   first_seen_at TEXT(32)               -- UTC end time of the first match that used it
 );
 
--- Which attacks each match was played with, in the order of its attack list.
+-- Which attacks each match was played with, in the order of its attack list, and how they were used.
 CREATE TABLE IF NOT EXISTS MatchAttack (
   match_id TEXT(16) NOT NULL REFERENCES MatchLog (id),
   slot INTEGER NOT NULL,               -- 1, 2, 3... position in the match's attack list
   attack_id TEXT(16) NOT NULL REFERENCES Attack (id),
+  uses INTEGER NOT NULL DEFAULT 0,     -- times it was cast in the match (both players)
+  is_first INTEGER NOT NULL DEFAULT 0, -- 1 if it was the first attack cast in the match
+  is_last INTEGER NOT NULL DEFAULT 0,  -- 1 if it was the last attack cast (the finishing blow if result = finished)
   PRIMARY KEY (match_id, slot)
 );
 
