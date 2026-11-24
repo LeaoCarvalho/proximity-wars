@@ -20,6 +20,7 @@ import time
 import uuid
 
 from db import Database, DatabaseError
+from rules import CLASSIC_ATTACKS, SAMPLE_BANK, validate_attacks
 
 DEFAULT_DIR = os.environ.get("METRICS_DIR") or os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "data")
@@ -41,6 +42,11 @@ def attack_id(attack):
     canonical["tiles"] = sorted(canonical["tiles"] or [])
     canonical["art"] = canonical["art"] or None
     return hashlib.sha1(_json(canonical).encode("utf-8")).hexdigest()[:16]
+
+
+def builtin_attack_ids():
+    """Fingerprints of the attacks that ship with the game (Classic 4 and the sample bank)."""
+    return {attack_id(a) for a in validate_attacks(CLASSIC_ATTACKS + SAMPLE_BANK)}
 
 
 def attack_from_row(row):
@@ -398,6 +404,18 @@ class MetricsStore:
             if a["match_id"] in attacks:
                 attacks[a["match_id"]].append(attack_from_row(a))
         return [record_from_rows(r, by_match[r["id"]], attacks[r["id"]]) for r in rows]
+
+    def stored_attack_ids(self, ids):
+        """Which of these attack fingerprints are stored (database, or the local match file
+        without one). Raises DatabaseError if the database can't be reached."""
+        ids = list(dict.fromkeys(ids))
+        if not ids:
+            return set()
+        if self.db is not None:
+            rows = self.db.execute(f"SELECT id FROM Attack WHERE id IN ({', '.join('?' * len(ids))})", ids)
+            return {r["id"] for r in rows}
+        wanted = set(ids)
+        return {attack_id(a) for r in self._read("matches.jsonl") for a in r.get("attack_list") or []} & wanted
 
     def attacks(self, limit=300):
         """Every different attack that was played, most recently used first:

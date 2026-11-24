@@ -218,8 +218,11 @@ class GameScreen:
         except Exception as exc:
             self.status, self.status_color = f"Connection failed: {exc}", BAD
             return
-        self.peer.send({"type": "hello", "mode": self.mode, "config": self.hello_config, "room": self.room,
-                        "private": self.private})
+        hello = {"type": "hello", "mode": self.mode, "config": self.hello_config, "room": self.room,
+                 "private": self.private}
+        if self.app.dev_key:
+            hello["dev_key"] = self.app.dev_key   # lets the server accept new attacks
+        self.peer.send(hello)
         if self.mode == "pvp":
             self.status, self.status_color = "Connected. Waiting for the other player...", WARN
         else:

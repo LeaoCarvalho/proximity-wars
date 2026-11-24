@@ -21,13 +21,15 @@ match is written to the metrics store (metrics.py).
 """
 
 import asyncio
+import hmac
 import os
 import random
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
-from metrics import MetricsStore
+from db import DatabaseError, load_env
+from metrics import MetricsStore, attack_id, builtin_attack_ids
 from rules import ConfigError, default_config, validate_config
 from session import BOT_DELAY, BOT_DELAY_FAST, MatchSession
 
@@ -35,9 +37,30 @@ MODES = ("pvp", "bot", "bot_vs_bot")
 CODE_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ"   # no I / O, easy to read out loud
 BOT = "bot"
 SPECTATOR = "spectator"
+load_env()   # .env next to this file (the host's environment variables win)
 METRICS_TOKEN = os.environ.get("METRICS_TOKEN")
+# Only clients that send this key (dev mode) may use attacks that are not built in or stored
+# in the database. Not set: any valid attack is allowed.
+DEV_KEY = os.environ.get("DEV_KEY", "").strip() or None
+BUILTIN_ATTACKS = builtin_attack_ids()
 
 store = MetricsStore()
+if DEV_KEY is None:
+    print("DEV_KEY is not set: any client may create new attacks.")
+
+
+def is_dev(msg):
+    key = msg.get("dev_key")
+    return DEV_KEY is not None and isinstance(key, str) and hmac.compare_digest(key.encode(), DEV_KEY.encode())
+
+
+async def unknown_attacks(cfg):
+    """Names of the config's attacks that are neither built in nor stored. Raises DatabaseError."""
+    new = [a for a in cfg["attacks"] if attack_id(a) not in BUILTIN_ATTACKS]
+    if not new:
+        return []
+    stored = await asyncio.to_thread(store.stored_attack_ids, [attack_id(a) for a in new])
+    return [a["name"] for a in new if attack_id(a) not in stored]
 
 
 async def send(ws, message) -> bool:
@@ -117,6 +140,18 @@ class Lobby:
             except ConfigError as exc:
                 await send(ws, {"type": "config_error", "errors": exc.errors})
                 return False
+            if DEV_KEY is not None and not is_dev(msg):
+                try:
+                    unknown = await unknown_attacks(cfg)
+                except DatabaseError as exc:
+                    print("Could not check attacks in the database:", exc)
+                    unknown, problem = None, "The server could not check the attacks in the database; try again."
+                if unknown is None or unknown:
+                    errors = [problem] if unknown is None else [
+                        "attacks: not in the database: " + ", ".join(unknown),
+                        "Only dev mode (--dev with the server's DEV_KEY) can create attacks."]
+                    await send(ws, {"type": "config_error", "errors": errors})
+                    return False
         code = str(msg.get("room") or "").strip().upper()
         private = bool(msg.get("private"))
 

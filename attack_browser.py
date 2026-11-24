@@ -14,8 +14,8 @@ import urllib.request
 
 import pygame
 
-from metrics import MetricsStore, attack_id
-from rules import CLASSIC_ATTACKS, SAMPLE_BANK, ConfigError, validate_attacks
+from metrics import MetricsStore, attack_id, builtin_attack_ids
+from rules import ConfigError, validate_attacks
 from ui import (
     ACCENT, BAD, BG, BORDER, Button, DIM, GOOD, HEIGHT, MUTED, PANEL, PANEL_HI, TEXT, TextField, WARN, WIDTH,
     fit_text, text,
@@ -25,7 +25,7 @@ TIER_COLORS = {"bronze": (205, 140, 90), "silver": (190, 198, 210), "gold": (235
 
 # Fingerprints of attacks a non-dev client may use: the built-in ones, plus every
 # attack seen in the database (filled by fetch_stored_attacks).
-KNOWN_IDS = {attack_id(a) for a in validate_attacks(CLASSIC_ATTACKS + SAMPLE_BANK)}
+KNOWN_IDS = builtin_attack_ids()
 
 
 def fetch_stored_attacks(http_url, timeout=10):

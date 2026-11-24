@@ -1,4 +1,5 @@
 import argparse
+import os
 import sys
 
 import pygame
@@ -101,6 +102,9 @@ class MenuScreen:
         text(surface, "rules test lab", (WIDTH // 2, 166), 20, MUTED, center=True)
         if self.app.dev:
             text(surface, "DEV MODE", (WIDTH - 20, 14), 18, WARN, bold=True, right=True)
+            if not self.app.dev_key:
+                text(surface, "no DEV_KEY in .env: online matches can't use new attacks", (WIDTH - 20, 38),
+                     14, DIM, right=True)
         text(surface, "Server", (WIDTH // 2 - 340, 208), 16, MUTED)
         text(surface, "Match code (to join a friend)", (WIDTH // 2 + 190, 208), 16, MUTED)
         self.server.draw(surface)
@@ -116,8 +120,9 @@ class MenuScreen:
 
 
 class App:
-    def __init__(self, server, room="", dev=False):
+    def __init__(self, server, room="", dev=False, dev_key=None):
         self.dev = dev            # dev mode: may create and edit attacks
+        self.dev_key = dev_key if dev else None   # sent to the server so it accepts new attacks
         self.server = server
         self.room = room
         self.running = True
@@ -238,7 +243,14 @@ def main():
     pygame.key.start_text_input()
     clock = pygame.time.Clock()
 
-    app = App(server, args.room.strip().upper(), dev=args.dev)
+    dev_key = None
+    if args.dev:
+        from db import load_env
+        load_env()
+        dev_key = os.environ.get("DEV_KEY", "").strip() or None
+        if not dev_key:
+            print("Dev mode without DEV_KEY in .env: the server will refuse new attacks in online matches.")
+    app = App(server, args.room.strip().upper(), dev=args.dev, dev_key=dev_key)
     mode = "bot_vs_bot" if args.bot_vs_bot else "bot" if args.bot else "pvp"
     if args.offline or mode != "pvp":
         app.launch(mode, offline=args.offline, cfg=cfg)
