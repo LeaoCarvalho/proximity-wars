@@ -4,7 +4,7 @@ import sys
 import pygame
 
 from rules import ConfigError, validate_config
-from ui import BG, DIM, FPS, HEIGHT, MUTED, WIDTH, Button, TextField, set_view, text, to_canvas
+from ui import BG, DIM, FPS, HEIGHT, MUTED, WARN, WIDTH, Button, TextField, set_view, text, to_canvas
 
 DEFAULT_PORT = 8000
 
@@ -99,6 +99,8 @@ class MenuScreen:
         surface.fill(BG)
         text(surface, "PROXIMITY WARS", (WIDTH // 2, 100), 56, bold=True, center=True)
         text(surface, "rules test lab", (WIDTH // 2, 166), 20, MUTED, center=True)
+        if self.app.dev:
+            text(surface, "DEV MODE", (WIDTH - 20, 14), 18, WARN, bold=True, right=True)
         text(surface, "Server", (WIDTH // 2 - 340, 208), 16, MUTED)
         text(surface, "Match code (to join a friend)", (WIDTH // 2 + 190, 208), 16, MUTED)
         self.server.draw(surface)
@@ -114,7 +116,8 @@ class MenuScreen:
 
 
 class App:
-    def __init__(self, server, room=""):
+    def __init__(self, server, room="", dev=False):
+        self.dev = dev            # dev mode: may create and edit attacks
         self.server = server
         self.room = room
         self.running = True
@@ -193,6 +196,9 @@ def main():
                         help="Play on this computer without a server (uses --config if given)")
     parser.add_argument("--bot", action="store_true", help="Play against the bot")
     parser.add_argument("--bot-vs-bot", action="store_true", help="Watch two bots play")
+    parser.add_argument("--dev", action="store_true",
+                        help="Dev mode: allows creating and editing attacks (others can only use built-in "
+                             "attacks and attacks stored in the database)")
     args = parser.parse_args()
 
     server = args.host
@@ -209,11 +215,22 @@ def main():
             for line in getattr(exc, "errors", [str(exc)]):
                 print("  -", line)
             sys.exit(1)
+        if not args.dev:
+            from attack_browser import unknown_attacks
+            try:
+                unknown = unknown_attacks(cfg["attacks"], make_http_url(server))
+            except (OSError, ValueError) as exc:
+                print(f"Cannot check the attacks of {args.config} in the database: {exc}")
+                sys.exit(1)
+            if unknown:
+                print(f"{args.config} has attacks that are not in the database: {', '.join(unknown)}")
+                print("Only dev mode (--dev) can create attacks.")
+                sys.exit(1)
 
     pygame.init()
     info = pygame.display.Info()
     pygame.display.set_mode(window_size(info.current_w, info.current_h), pygame.RESIZABLE)
-    pygame.display.set_caption("Proximity Wars")
+    pygame.display.set_caption("Proximity Wars" + (" (dev mode)" if args.dev else ""))
     try:
         pygame.scrap.init()
     except Exception:
@@ -221,7 +238,7 @@ def main():
     pygame.key.start_text_input()
     clock = pygame.time.Clock()
 
-    app = App(server, args.room.strip().upper())
+    app = App(server, args.room.strip().upper(), dev=args.dev)
     mode = "bot_vs_bot" if args.bot_vs_bot else "bot" if args.bot else "pvp"
     if args.offline or mode != "pvp":
         app.launch(mode, offline=args.offline, cfg=cfg)

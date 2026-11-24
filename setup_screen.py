@@ -103,7 +103,8 @@ class SetupScreen:
         self.where = Cycle([("online", "Online server"), ("offline", "This computer (no server)")], w=330)
         self.visibility = Cycle([("private", "Private (code only)"), ("public", "Public (anyone can join)")],
                                 w=330)
-        self.btn_edit = Button("Edit attacks...", lambda: app.set_screen(AttackEditor(app, self)))
+        self.btn_edit = Button("Edit attacks..." if app.dev else "Choose attacks...",
+                               lambda: app.set_screen(AttackEditor(app, self)))
         self.btn_classic = Button("Classic 4", self._use_classic)
         self.btn_sample = Button("Sample bank (15)", self._use_sample)
 
@@ -260,11 +261,30 @@ class SetupScreen:
         except ConfigError as exc:
             self.msg.errors(exc.errors, f"The JSON from {source} has problems:")
             return
+        if not self.app.dev and not self._attacks_allowed(cfg["attacks"], source):
+            return
         self.load(cfg)
         if start:
             self.start()  # uses the Opponent / Play on / Visibility choices
         else:
             self.msg.info(f"Loaded settings from {source}.")
+
+    def _attacks_allowed(self, attacks, source):
+        """Without dev mode, only built-in attacks and attacks stored in the database can be used."""
+        from attack_browser import unknown_attacks
+        try:
+            unknown = unknown_attacks(attacks, self.app.http_url(), allowed=self.attacks)
+        except (OSError, ValueError) as exc:
+            self.msg.errors([f"{getattr(exc, 'reason', exc)}",
+                             "Without dev mode, attacks must come from the database, so it has to be reachable."],
+                            f"Could not check the attacks from {source} in the database:")
+            return False
+        if unknown:
+            self.msg.errors([", ".join(unknown),
+                             "Only dev mode (--dev) can create attacks. Use attacks from the database instead."],
+                            f"The JSON from {source} has attacks that are not in the database:")
+            return False
+        return True
 
     def paste_json(self, start):
         raw = paste_from_clipboard().strip()
@@ -471,6 +491,7 @@ class AttackEditor:
     def __init__(self, app, setup):
         self.app = app
         self.setup = setup
+        self.dev = app.dev     # only dev mode can create or edit attacks
         self.msg = Messages()
         self.items = [self._item(a) for a in setup.attacks] or [self._item(None)]
         self.scroll = 0
@@ -495,8 +516,9 @@ class AttackEditor:
         y = self.LIST_Y + self.LIST_ROWS * self.ROW_H + 12
         self.list_buttons = []
         x = self.LIST_X
-        for label, fn in [("New", self.new), ("Duplicate", self.duplicate), ("Delete", self.delete),
-                          ("Up", lambda: self.move(-1)), ("Down", lambda: self.move(1))]:
+        actions = [("New", self.new), ("Duplicate", self.duplicate)] if self.dev else []
+        actions += [("Delete", self.delete), ("Up", lambda: self.move(-1)), ("Down", lambda: self.move(1))]
+        for label, fn in actions:
             b = Button(label, fn, h=32, size=16).place(x, y)
             self.list_buttons.append(b)
             x += b.rect.w + 6
@@ -513,6 +535,8 @@ class AttackEditor:
             Button("Save file", self.save_file),
             Button("Done", self.done, primary=True),
         ]
+        if not self.dev:   # pasting or loading attacks would create new ones
+            self.bottom = [b for b in self.bottom if getattr(b, "label", "") not in ("Paste JSON", "Load file")]
         x = 30
         for b in self.bottom:
             b.place(x, HEIGHT - 52)
@@ -612,11 +636,15 @@ class AttackEditor:
 
     # actions -----------------------------------------------------------
     def new(self):
+        if not self.dev:
+            return
         self._store()
         self.items.append(self._item(None))
         self._select(len(self.items) - 1)
 
     def duplicate(self):
+        if not self.dev:
+            return
         self._store()
         it = self.items[self.selected]
         copy_item = {**it, "tiles": set(it["tiles"]), "name": (it["name"] + " copy")[:40]}
@@ -658,9 +686,12 @@ class AttackEditor:
         self.set_attacks(attacks, source)
 
     def paste_json(self):
-        self._parse(paste_from_clipboard(), "the clipboard")
+        if self.dev:
+            self._parse(paste_from_clipboard(), "the clipboard")
 
     def load_file(self):
+        if not self.dev:
+            return
         path = self.path.value.strip()
         try:
             with open(path, encoding="utf-8") as f:
@@ -709,8 +740,8 @@ class AttackEditor:
             max_scroll = max(0, len(self.items) - self.LIST_ROWS)
             self.scroll = min(max_scroll, max(0, self.scroll - event.y))
             return
-        for w in [self.name, self.damage, self.tier, self.desc, self.tiles, *self.quick, *self.list_buttons,
-                  *self.bottom]:
+        fields = [self.name, self.damage, self.tier, self.desc, self.tiles, *self.quick] if self.dev else []
+        for w in [*fields, *self.list_buttons, *self.bottom]:
             if w.handle(event):
                 self._store()
                 return
@@ -732,7 +763,7 @@ class AttackEditor:
     def draw(self, surface):
         self._store()
         surface.fill(BG)
-        text(surface, "ATTACK EDITOR", (WIDTH // 2, 18), 34, bold=True, center=True)
+        text(surface, "ATTACK EDITOR" if self.dev else "ATTACKS", (WIDTH // 2, 18), 34, bold=True, center=True)
         text(surface, f"Attacks ({len(self.items)})", (self.LIST_X, self.LIST_Y - 24), 17, MUTED)
 
         for vi in range(self.LIST_ROWS):
@@ -761,8 +792,10 @@ class AttackEditor:
         text(surface, "Description", (fx, 189), 18)
         text(surface, "Hit distances", (fx, 236), 18)
         text(surface, "tiles away from the caster", (fx, 258), 14, DIM)
-        for w in [self.name, self.damage, self.tier, self.desc, self.tiles, *self.quick]:
+        for w in [self.name, self.damage, self.tier, self.desc, self.tiles, *(self.quick if self.dev else [])]:
             w.draw(surface)
+        if not self.dev:
+            text(surface, "Read-only: start the game with --dev to create or edit attacks.", (fx + 130, 312), 15, WARN)
         self._draw_card_preview(surface, pygame.Rect(fx + 452, 86, 160, 110))
 
         # Preview: Player 1 on tile 3 casting toward the right.

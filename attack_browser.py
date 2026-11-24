@@ -2,6 +2,9 @@
 
 The list comes from the Turso database in .env when this computer has one,
 otherwise from the server's GET /attacks.
+
+Only clients started with --dev can create or edit attacks. Others can use the
+built-in attacks and the ones stored in the database; `unknown_attacks` checks that.
 """
 
 import json
@@ -12,13 +15,17 @@ import urllib.request
 import pygame
 
 from metrics import MetricsStore, attack_id
-from rules import ConfigError, validate_attacks
+from rules import CLASSIC_ATTACKS, SAMPLE_BANK, ConfigError, validate_attacks
 from ui import (
     ACCENT, BAD, BG, BORDER, Button, DIM, GOOD, HEIGHT, MUTED, PANEL, PANEL_HI, TEXT, TextField, WARN, WIDTH,
     fit_text, text,
 )
 
 TIER_COLORS = {"bronze": (205, 140, 90), "silver": (190, 198, 210), "gold": (235, 200, 90)}
+
+# Fingerprints of attacks a non-dev client may use: the built-in ones, plus every
+# attack seen in the database (filled by fetch_stored_attacks).
+KNOWN_IDS = {attack_id(a) for a in validate_attacks(CLASSIC_ATTACKS + SAMPLE_BANK)}
 
 
 def fetch_stored_attacks(http_url, timeout=10):
@@ -37,7 +44,19 @@ def fetch_stored_attacks(http_url, timeout=10):
         except (ConfigError, KeyError, TypeError):
             continue
         out.append((entry, attack))
+        KNOWN_IDS.add(attack_id(attack))
     return out, source
+
+
+def unknown_attacks(attacks, http_url, allowed=()):
+    """Names of the attacks that are neither built in, in `allowed`, nor stored in the database.
+    Looks the database up only when needed. Raises OSError / ValueError if it can't be reached."""
+    known = KNOWN_IDS | {attack_id(a) for a in allowed}
+    missing = [a for a in attacks if attack_id(a) not in known]
+    if missing:
+        fetch_stored_attacks(http_url)
+        missing = [a for a in missing if attack_id(a) not in KNOWN_IDS]
+    return [a["name"] for a in missing]
 
 
 class AttackBrowser:
